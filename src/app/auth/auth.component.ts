@@ -59,20 +59,6 @@ import { AuthService } from '../services/auth.service';
 
     <div class="page-container-wide auth-body">
 
-      <aside class="demo-notice" role="note">
-        <mat-icon class="demo-notice-icon">info</mat-icon>
-        <div class="demo-notice-copy">
-          <h3>Demo application, not a reference authentication implementation.</h3>
-          <p>
-            This sign-in exists to show dual-source permissions end to end. Do not copy the flow into
-            a production application. The Alfresco ticket is revocable, so it survives a page reload.
-            The Nuxeo credential is a reusable username and password pair, so it is held in memory
-            only and never written to browser storage: reloading the page ends the Nuxeo session and
-            you connect again.
-          </p>
-        </div>
-      </aside>
-
       <div class="auth-grid">
 
         <mat-card class="connect-card" [class.connect-ready]="alfrescoLoggedIn">
@@ -385,48 +371,6 @@ import { AuthService } from '../services/auth.service';
       margin-top: clamp(-56px, -5vw, -40px);
       position: relative;
       z-index: 2;
-    }
-
-    /* Demo notice */
-
-    .demo-notice {
-      display: flex;
-      gap: 14px;
-      align-items: flex-start;
-      padding: 18px 22px;
-      border-radius: var(--radius-lg);
-      border: 1px solid var(--cl-border-strong);
-      border-left: 4px solid var(--cl-warning);
-      background: var(--cl-surface);
-      box-shadow: var(--cl-shadow);
-    }
-
-    .demo-notice-icon {
-      color: var(--cl-warning);
-      flex-shrink: 0;
-      font-size: 22px;
-      height: 22px;
-      width: 22px;
-      margin-top: 1px;
-    }
-
-    .demo-notice-copy { min-width: 0; }
-
-    .demo-notice h3 {
-      margin: 0 0 6px;
-      font-family: var(--cl-font-display);
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-      color: var(--cl-text);
-    }
-
-    .demo-notice p {
-      margin: 0;
-      font-size: 13px;
-      line-height: 1.65;
-      color: var(--cl-text-muted);
-      max-width: 92ch;
     }
 
     /* ── Connection cards ──────────────────────────────────── */
