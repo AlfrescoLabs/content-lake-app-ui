@@ -16,7 +16,7 @@ npm start
 ```
 
 The dev server proxies `/api/rag`, `/alfresco`, and `/nuxeo` to `http://localhost`. The
-[content-lake-app-deployment](https://github.com/aborroy/content-lake-app-deployment) stack
+[content-lake-app-deployment](https://github.com/AlfrescoLabs/content-lake-app-deployment) stack
 must be running locally.
 
 ## Making Changes

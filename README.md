@@ -18,10 +18,10 @@ Part of the **AI Ready Content Hub** ecosystem -- a PoC for ingesting Alfresco a
 
 | Repo | Role |
 |---|---|
-| [content-lake-app](https://github.com/aborroy/content-lake-app) | Java ingestion pipeline and RAG service |
-| [content-lake-app-deployment](https://github.com/aborroy/content-lake-app-deployment) | Docker Compose stack that wires everything together |
-| [alfresco-content-lake-ui](https://github.com/aborroy/alfresco-content-lake-ui) | ACA/ADW extension: semantic search + RAG chat sidebar |
-| **[content-lake-app-ui](https://github.com/aborroy/content-lake-app-ui)** | Standalone demo UI (Alfresco + Nuxeo dual auth) (this repo) |
+| [content-lake-app](https://github.com/AlfrescoLabs/content-lake-app) | Java ingestion pipeline and RAG service |
+| [content-lake-app-deployment](https://github.com/AlfrescoLabs/content-lake-app-deployment) | Docker Compose stack that wires everything together |
+| [alfresco-content-lake-ui](https://github.com/AlfrescoLabs/alfresco-content-lake-ui) | ACA/ADW extension: semantic search + RAG chat sidebar |
+| **[content-lake-app-ui](https://github.com/AlfrescoLabs/content-lake-app-ui)** | Standalone demo UI (Alfresco + Nuxeo dual auth) (this repo) |
 | [nuxeo-deployment](https://github.com/aborroy/nuxeo-deployment) | Local Nuxeo + PostgreSQL stack (required for Nuxeo profiles) |
 
 ## Features
@@ -71,7 +71,7 @@ npm start
 
 The dev server uses `proxy.conf.json` and proxies `/api/rag`, `/alfresco`, and `/nuxeo` to
 `http://localhost` by default. The full deployment stack must be running locally (see
-[content-lake-app-deployment](https://github.com/aborroy/content-lake-app-deployment)).
+[content-lake-app-deployment](https://github.com/AlfrescoLabs/content-lake-app-deployment)).
 
 ### Environment variables
 
