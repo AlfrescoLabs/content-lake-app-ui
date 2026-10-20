@@ -5,6 +5,7 @@
 [![Angular](https://img.shields.io/badge/Angular-18-DD0031.svg)](https://angular.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](https://docs.docker.com/compose/)
 [![Status](https://img.shields.io/badge/Status-PoC-yellow.svg)]()
+[![Built on Hyland OpenArch](https://img.shields.io/badge/Built%20on-Hyland%20OpenArch-0b5394.svg)](https://github.com/Hyland/OpenArch)
 
 Demo Angular application for the AI Ready Content Hub project (ARCH). It provides a unified search and chat UI that talks to the RAG service and opens source documents in Alfresco ACA or Nuxeo Web UI.
 
@@ -14,7 +15,7 @@ Demo Angular application for the AI Ready Content Hub project (ARCH). It provide
 
 ## AI Ready Content Hub Ecosystem
 
-Part of the **AI Ready Content Hub** ecosystem -- a PoC for ingesting Alfresco and Nuxeo content into [hxpr](https://github.com/HylandSoftware/hxpr) for hybrid semantic search and RAG.
+Part of the **AI Ready Content Hub** ecosystem -- a PoC for ingesting Alfresco and Nuxeo content into [Hyland OpenArch](https://github.com/Hyland/OpenArch) (hxpr) for hybrid semantic search and RAG.
 
 | Repo | Role |
 |---|---|
