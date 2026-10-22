@@ -30,8 +30,8 @@ interface LoginForm {
             <span class="accent-teal">everywhere</span>.
           </h1>
           <p class="hero-lede">
-            Alfresco uses green accents and Nuxeo uses blue accents across search and chat —
-            so provenance stays readable even when both repositories contribute to the same session.
+            Each source keeps its own colour across search and chat, so provenance stays readable
+            even when several repositories contribute to the same session.
           </p>
 
           <div class="hero-chips">

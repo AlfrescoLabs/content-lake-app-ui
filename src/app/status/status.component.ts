@@ -17,7 +17,7 @@ import { sourceClass, sourceIcon, splitSourceKey } from '../utils/source-present
       <div class="status-header">
         <div>
           <span class="eyebrow">Operations</span>
-          <h1 class="display-2">AI Ready Content Hub status</h1>
+          <h1 class="display-2">Hyland OpenArch<sup>TM</sup> status</h1>
         </div>
         <button mat-stroked-button type="button" (click)="refresh()" [disabled]="loading">
           <mat-icon>refresh</mat-icon>
@@ -38,7 +38,7 @@ import { sourceClass, sourceIcon, splitSourceKey } from '../utils/source-present
       <ng-container *ngIf="status && !loading">
         <div class="status-tiles">
           <div class="status-tile">
-            <span class="tile-label tile-label-brand">Hyland OpenArch</span>
+            <span class="tile-label tile-label-brand">Hyland OpenArch<sup>TM</sup></span>
             <span class="badge" [class.up]="isUp(status.hxprStatus)" [class.down]="!isUp(status.hxprStatus)">
               <mat-icon>{{ isUp(status.hxprStatus) ? 'check_circle' : 'error' }}</mat-icon>
               {{ status.hxprStatus }}

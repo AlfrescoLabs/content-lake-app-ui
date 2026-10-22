@@ -21,7 +21,7 @@ import { sourceIcon } from '../utils/source-presentation';
           <img src="assets/hyland-logo.svg" class="hy-logo" alt="Hyland" />
           <span class="brand-divider" aria-hidden="true"></span>
           <span class="brand-copy">
-            <span class="brand-title">AI Ready Content Hub</span>
+            <span class="brand-title">Hyland OpenArch<sup>TM</sup></span>
             <span class="brand-subtitle">Multi-source search &amp; RAG</span>
           </span>
         </button>

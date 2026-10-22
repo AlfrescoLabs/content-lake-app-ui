@@ -432,3 +432,11 @@ a:focus-visible,
     scroll-behavior: auto !important;
   }
 }
+
+/* Trademark mark on the product name: small, raised, and without changing the line height. */
+sup {
+  font-size: 0.5em;
+  line-height: 0;
+  vertical-align: super;
+  margin-left: 0.08em;
+}
