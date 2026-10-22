@@ -13,15 +13,11 @@ import {
 } from '../services/rag.service';
 import {
   ContentSourceCatalogService,
-  ContentSourceOption
+  ContentSourceOption,
+  KnownSource
 } from '../services/content-source-catalog.service';
 import { markdownToPlainText } from '../utils/markdown-plaintext';
-import {
-  SourceModifier,
-  sourceClass,
-  sourceIcon,
-  sourceModifier
-} from '../utils/source-presentation';
+import { sourceClass, sourceIcon } from '../utils/source-presentation';
 
 let _nextId = 0;
 
@@ -60,13 +56,11 @@ export class DeleteSessionDialogComponent {}
           </div>
 
           <div class="sidebar-legend">
-            <span class="source-badge source-badge-alfresco">
-              <mat-icon>storage</mat-icon>
-              Alfresco
-            </span>
-            <span class="source-badge source-badge-nuxeo">
-              <mat-icon>folder_open</mat-icon>
-              Nuxeo
+            <span *ngFor="let src of legendSources"
+                  class="source-badge"
+                  [ngClass]="[sourceBadgeClass(src.sourceType), sourceColour(src.sourceType, src.sourceId)]">
+              <mat-icon>{{ sourceIcon(src.sourceType) }}</mat-icon>
+              {{ sourceLabel(src.sourceType, src.sourceId) }}
             </span>
           </div>
 
@@ -121,7 +115,7 @@ export class DeleteSessionDialogComponent {}
                                    [value]="option.key"
                                    [disabled]="!isSelectable(option)"
                                    [matTooltip]="sourceTooltip(option)">
-                  <span class="toggle-label" [ngClass]="'toggle-label-' + modifierFor(option.sourceType)">
+                  <span class="toggle-label" [ngClass]="colourFor(option)">
                     <mat-icon>{{ iconFor(option.sourceType) }}</mat-icon>
                     {{ option.label }}
                   </span>
@@ -269,7 +263,7 @@ export class DeleteSessionDialogComponent {}
                   <div *ngIf="msg['_showSources']" class="sources-list">
                     <div *ngFor="let src of msg.sources"
                          class="source-item"
-                         [ngClass]="sourceCardClass(src.sourceType)">
+                         [ngClass]="[sourceCardClass(src.sourceType), sourceColour(src.sourceType, src.sourceId)]">
                       <div class="source-header">
                         <div class="source-title-group">
                           <span class="source-icon-wrap" [ngClass]="sourceBadgeClass(src.sourceType)">
@@ -288,7 +282,7 @@ export class DeleteSessionDialogComponent {}
 
                         <span *ngIf="src.sourceType"
                               class="source-badge"
-                              [ngClass]="sourceBadgeClass(src.sourceType)">
+                              [ngClass]="[sourceBadgeClass(src.sourceType), sourceColour(src.sourceType, src.sourceId)]">
                           <mat-icon>{{ sourceIcon(src.sourceType) }}</mat-icon>
                           {{ sourceLabel(src.sourceType, src.sourceId) }}
                         </span>
@@ -522,12 +516,14 @@ export class DeleteSessionDialogComponent {}
       background: var(--hy-gray-50);
     }
 
+    /* The source's palette slot, or a readable neutral for a type-level option over several sources. */
     .toggle-label {
       display: inline-flex;
       align-items: center;
       gap: 5px;
       font-weight: 600;
       font-size: 12px;
+      color: var(--src-strong, var(--cl-text-muted));
     }
 
     .toggle-label mat-icon {
@@ -535,11 +531,6 @@ export class DeleteSessionDialogComponent {}
       height: 15px;
       font-size: 15px;
     }
-
-    .toggle-label-alfresco { color: var(--source-alfresco-strong); }
-    .toggle-label-nuxeo    { color: var(--source-nuxeo-strong); }
-    /* Any other source type: readable, and not borrowing either repository's colour (#9). */
-    .toggle-label-generic  { color: var(--cl-text-muted); }
 
     /* ---- Conversation memory (#10) ---- */
 
@@ -860,14 +851,9 @@ export class DeleteSessionDialogComponent {}
       background: var(--hy-gray-50);
     }
 
-    .source-item-alfresco {
-      border-color: rgba(120, 190, 32, 0.2);
-      background: rgba(239, 248, 223, 0.5);
-    }
-
-    .source-item-nuxeo {
-      border-color: rgba(0, 163, 224, 0.18);
-      background: rgba(229, 246, 252, 0.5);
+    .source-item[class*='source-c'] {
+      border-color: color-mix(in srgb, var(--src) 20%, transparent);
+      background: color-mix(in srgb, var(--src-soft) 50%, transparent);
     }
 
     .source-header {
@@ -904,14 +890,9 @@ export class DeleteSessionDialogComponent {}
       width: 16px;
     }
 
-    .source-icon-wrap.source-badge-alfresco {
-      background: var(--source-alfresco-soft);
-      color: var(--source-alfresco-strong);
-    }
-
-    .source-icon-wrap.source-badge-nuxeo {
-      background: var(--source-nuxeo-soft);
-      color: var(--source-nuxeo-strong);
+    .source-item[class*='source-c'] .source-icon-wrap {
+      background: var(--src-soft);
+      color: var(--src-strong);
     }
 
     .source-meta { min-width: 0; }
@@ -947,8 +928,9 @@ export class DeleteSessionDialogComponent {}
       word-break: break-word;
     }
 
-    .source-item-alfresco .source-chunk { border-left-color: rgba(120, 190, 32, 0.5); }
-    .source-item-nuxeo    .source-chunk { border-left-color: rgba(0, 163, 224, 0.45); }
+    .source-item[class*='source-c'] .source-chunk {
+      border-left-color: color-mix(in srgb, var(--src) 50%, transparent);
+    }
 
     /* ---- Table chunks (#118) ---- */
 
@@ -1232,12 +1214,16 @@ export class ChatComponent implements OnInit, AfterViewChecked {
   sourceTooltip(option: ContentSourceOption): string {
     if (!this.isSelectable(option)) return `Log in to ${option.label} first`;
     const docs = `${option.count} document${option.count !== 1 ? 's' : ''} indexed`;
-    return `${option.label} only (${docs})`;
+    const id = option.level === 'id' ? ` - ${option.key}` : '';
+    return `${option.label} only (${docs})${id}`;
   }
 
-  iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
+  colourFor(option: ContentSourceOption): string { return this.sources.optionColourClass(option); }
 
-  modifierFor(sourceType?: string): SourceModifier { return sourceModifier(sourceType); }
+  /** One legend entry per known source, named and coloured as everywhere else. */
+  get legendSources(): KnownSource[] { return this.sources.knownSources(); }
+
+  iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
 
   toggleSummary(): void { this.showSummary = !this.showSummary; }
 
@@ -1261,9 +1247,13 @@ export class ChatComponent implements OnInit, AfterViewChecked {
 
   sourceIcon(source: ContentSourceType | undefined): string { return sourceIcon(source); }
 
-  /** The type, or the qualified source id when the type has more than one source. */
+  /** The source's display name, or its type with a short id. */
   sourceLabel(source: ContentSourceType | undefined, sourceId?: string): string {
     return this.auth.resultSourceLabel(source, sourceId);
+  }
+
+  sourceColour(source: ContentSourceType | undefined, sourceId?: string): string {
+    return this.sources.colourClass(sourceId || source);
   }
 
   sourceBadgeClass(source: ContentSourceType | undefined): string {

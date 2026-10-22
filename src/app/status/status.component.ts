@@ -2,7 +2,8 @@ import { Component, OnInit } from '@angular/core';
 import { ConnectorListing, RagService, StatusResponse } from '../services/rag.service';
 import { ConnectorHostStatus, ConnectorService } from '../services/connector.service';
 import { environment } from '../../environments/environment';
-import { sourceClass, sourceIcon, sourceTypeLabel, splitSourceKey } from '../utils/source-presentation';
+import { ContentSourceCatalogService } from '../services/content-source-catalog.service';
+import { sourceClass, sourceIcon, splitSourceKey } from '../utils/source-presentation';
 
 /**
  * Operational status view (#6): renders the rag-service /api/status snapshot -
@@ -64,7 +65,7 @@ import { sourceClass, sourceIcon, sourceTypeLabel, splitSourceKey } from '../uti
             <tbody>
               <tr *ngFor="let entry of sourceEntries">
                 <td>
-                  <span class="source-badge" [ngClass]="badgeClass(entry.sourceType)">
+                  <span class="source-badge" [ngClass]="[badgeClass(entry.sourceType), colourFor(entry.key)]">
                     <mat-icon>{{ iconFor(entry.sourceType) }}</mat-icon>
                     {{ entry.label }}
                   </span>
@@ -347,11 +348,14 @@ export class StatusComponent implements OnInit {
 
   constructor(
     private rag: RagService,
-    private connector: ConnectorService
+    private connector: ConnectorService,
+    private sources: ContentSourceCatalogService
   ) {}
 
   ngOnInit(): void {
     this.refresh();
+    // Loads the merged source list, so the rows are named and coloured as on the search screen.
+    this.sources.options().subscribe();
   }
 
   get connectorsConfigured(): boolean {
@@ -382,7 +386,7 @@ export class StatusComponent implements OnInit {
     return Object.entries(this.status.sourceCounts)
       .map(([key, count]) => {
         const { sourceType, sourceId } = splitSourceKey(key);
-        return { key, sourceType, sourceId, label: sourceTypeLabel(sourceType), count };
+        return { key, sourceType, sourceId, label: this.sources.label(key), count };
       })
       .sort((a, b) => b.count - a.count);
   }
@@ -390,6 +394,8 @@ export class StatusComponent implements OnInit {
   iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
 
   badgeClass(sourceType?: string): string { return sourceClass('source-badge', sourceType); }
+
+  colourFor(sourceKey: string): string { return this.sources.colourClass(sourceKey); }
 
   isUp(value?: string): boolean {
     return (value ?? '').toUpperCase() === 'UP';

@@ -4,7 +4,7 @@ import { BehaviorSubject, Observable, combineLatest, firstValueFrom, of } from '
 import { catchError, map } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
 import { resolveConnectorUrls, resolveStatusUrl } from '../utils/api-paths';
-import { sourceKeyLabel, sourceTypeLabel } from '../utils/source-presentation';
+import { sourceDisplayLabel } from '../utils/source-presentation';
 
 /** How a session proves itself to rag-service: an Alfresco ticket, or a base64(user:pass). */
 export type SourceLoginKind = 'password' | 'ticket';
@@ -83,6 +83,8 @@ export class AuthService {
   ];
 
   private sources$$ = new BehaviorSubject<ContentSourceDescriptor[]>([...AuthService.FALLBACK_SOURCES]);
+  /** Whether the list came from `/api/rag/sources` rather than {@link FALLBACK_SOURCES}. */
+  private listed = false;
   private sessions$$ = new BehaviorSubject<Map<string, SourceSession>>(new Map());
 
   /**
@@ -122,6 +124,11 @@ export class AuthService {
     return this.sources$$.getValue();
   }
 
+  /** Whether rag-service listed its sources, so {@link getSources} is not the fallback pair. */
+  hasSourceList(): boolean {
+    return this.listed;
+  }
+
   /** The sources a user can sign in to, which are the ones that get a login card. */
   getLoginSources(): ContentSourceDescriptor[] {
     return this.getSources().filter(s => s.loginKinds.length > 0);
@@ -143,19 +150,14 @@ export class AuthService {
     return this.getLoginSources().some(s => s.sourceType === type);
   }
 
-  /**
-   * Display name for a source. A type with one source keeps the type label, so one Alfresco and one Nuxeo
-   * read exactly as they always have; with several, the display name tells them apart.
-   */
+  /** Display name for a source: its configured name, else the type label, else the type and a short id. */
   sourceLabel(source: ContentSourceDescriptor): string {
-    if (!this.hasSeveralSources(source.sourceType)) return sourceTypeLabel(source.sourceType);
-    return source.displayName?.trim() || sourceKeyLabel(source.sourceId);
+    return sourceDisplayLabel(source.sourceId, this.getSources());
   }
 
-  /** Label for a hit's source: the type, or the qualified id when the type alone is ambiguous. */
+  /** Label for a hit's source, named the same way as {@link sourceLabel}. */
   resultSourceLabel(sourceType?: string, sourceKey?: string): string {
-    if (sourceKey && this.hasSeveralSources(sourceType)) return sourceKeyLabel(sourceKey);
-    return sourceTypeLabel(sourceType);
+    return sourceDisplayLabel(sourceKey || sourceType, this.getSources());
   }
 
   /**
@@ -195,7 +197,8 @@ export class AuthService {
         catchError(() => of(null))
       )
     ).then(sources => {
-      this.sources$$.next(sources && sources.length > 0 ? sources : [...AuthService.FALLBACK_SOURCES]);
+      this.listed = !!sources && sources.length > 0;
+      this.sources$$.next(this.listed ? sources! : [...AuthService.FALLBACK_SOURCES]);
       this.reconcileSessions();
     });
   }

@@ -4,6 +4,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 
 import { PermissionCompareComponent, documentKey } from './permission-compare.component';
 import { AuthService } from '../services/auth.service';
+import { ContentSourceCatalogService } from '../services/content-source-catalog.service';
 import { RagResult, RagService } from '../services/rag.service';
 
 const SEARCH_URL = '/api/rag/search/semantic';
@@ -41,7 +42,8 @@ describe('PermissionCompareComponent', () => {
     });
     httpMock = TestBed.inject(HttpTestingController);
     auth = TestBed.inject(AuthService);
-    component = new PermissionCompareComponent(auth, TestBed.inject(RagService));
+    component = new PermissionCompareComponent(
+      auth, TestBed.inject(RagService), TestBed.inject(ContentSourceCatalogService));
   });
 
   afterEach(() => {

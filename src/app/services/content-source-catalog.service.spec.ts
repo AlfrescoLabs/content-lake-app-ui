@@ -36,10 +36,46 @@ describe('ContentSourceCatalogService', () => {
     sessionStorage.clear();
   });
 
-  /** Resolves the option list, answering the status request with `sourceCounts`. */
-  async function optionsFor(sourceCounts: Record<string, number>): Promise<ContentSourceOption[]> {
+  const BRANCH = {
+    sourceId: 'alfresco:55d96fae-4d3a-aef9ebdade53', sourceType: 'alfresco',
+    displayName: 'Northgate Branch', loginKinds: ['password', 'ticket']
+  };
+  const HEAD_OFFICE = {
+    sourceId: 'alfresco:5ce58fd0-91b2-07c4a1e2f3d9', sourceType: 'alfresco',
+    displayName: 'Northgate Head Office', loginKinds: ['password', 'ticket']
+  };
+  const ALFRESCO = { sourceId: 'alfresco', sourceType: 'alfresco', displayName: 'Alfresco', loginKinds: ['ticket'] };
+  const NUXEO = { sourceId: 'nuxeo', sourceType: 'nuxeo', displayName: 'Nuxeo', loginKinds: ['password'] };
+
+  /** Answers the `/api/rag/sources` request the AuthService constructor makes. */
+  async function sourcesAre(sources: unknown[] | 'missing'): Promise<void> {
+    const auth = TestBed.inject(AuthService);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const request = httpMock.expectOne('/api/rag/sources');
+    if (sources === 'missing') {
+      request.flush('not found', { status: 404, statusText: 'Not Found' });
+    } else {
+      request.flush(sources);
+    }
+    await auth.ready;
+  }
+
+  /**
+   * Resolves the option list, answering the status request with `sourceCounts` (or failing it) and the
+   * source list with `sources`, which an older backend answers 404.
+   */
+  async function optionsFor(
+    sourceCounts: Record<string, number> | 'failed',
+    sources: unknown[] | 'missing' = 'missing'
+  ): Promise<ContentSourceOption[]> {
     const pending = firstValueFrom(service.options());
-    httpMock.expectOne(STATUS_URL).flush(status(sourceCounts));
+    const request = httpMock.expectOne(STATUS_URL);
+    if (sourceCounts === 'failed') {
+      request.error(new ProgressEvent('network error'));
+    } else {
+      request.flush(status(sourceCounts));
+    }
+    await sourcesAre(sources);
     return pending;
   }
 
@@ -60,49 +96,76 @@ describe('ContentSourceCatalogService', () => {
     expect(options.filter(o => o.loginGated).map(o => o.key)).toEqual(['alfresco', 'nuxeo']);
   });
 
-  it('alwaysOffersAlfrescoAndNuxeoEvenWithNothingIndexed', async () => {
-    // A fresh stack has an empty index, and the two options are gated on login rather than on content.
+  it('namesEachOfTwoAlfrescoSourcesAndOffersNothingElse', async () => {
+    // No Nuxeo is configured or indexed, and "All Alfresco" would repeat "All sources".
+    const options = await optionsFor(
+      { [BRANCH.sourceId]: 4, [HEAD_OFFICE.sourceId]: 9 }, [BRANCH, HEAD_OFFICE]);
+
+    expect(options.map(o => o.label)).toEqual(['Northgate Branch', 'Northgate Head Office']);
+    expect(options.map(o => o.level)).toEqual(['id', 'id']);
+    expect(options.map(o => o.count)).toEqual([4, 9]);
+  });
+
+  it('keepsOneTypeOptionEachForOneAlfrescoAndOneNuxeo', async () => {
+    const options = await optionsFor({ 'alfresco:acs-uuid': 3, 'nuxeo:prod': 2 }, [ALFRESCO, NUXEO]);
+
+    expect(options.map(o => o.key)).toEqual(['alfresco', 'nuxeo']);
+    expect(options.map(o => o.label)).toEqual(['Alfresco', 'Nuxeo']);
+    expect(options.map(o => o.level)).toEqual(['type', 'type']);
+    // The bare configured entry takes the id the index holds for its type.
+    expect(service.knownSources().map(s => s.sourceId)).toEqual(['alfresco:acs-uuid', 'nuxeo:prod']);
+    expect(['alfresco', 'nuxeo'].map(key => service.colourClass(key))).toEqual(['source-c1', 'source-c2']);
+  });
+
+  it('addsATypeOptionForSeveralSourcesOfATypeOnlyBesideAnotherType', async () => {
+    const options = await optionsFor(
+      { [BRANCH.sourceId]: 4, [HEAD_OFFICE.sourceId]: 9, 'nuxeo:prod': 2 }, [BRANCH, HEAD_OFFICE, NUXEO]);
+
+    expect(options.map(o => o.label))
+      .toEqual(['All Alfresco', 'Northgate Branch', 'Northgate Head Office', 'Nuxeo']);
+    expect(options[0].sourceKeys).toEqual([BRANCH.sourceId, HEAD_OFFICE.sourceId]);
+    expect(options[0].count).toBe(13);
+  });
+
+  it('labelsAnUnnamedSourceByAShortIdUniqueWithinItsType', async () => {
+    const options = await optionsFor({ 'alfresco:55d96fae-1': 1, 'alfresco:55d9b0c1-2': 1, 'alfresco:5ce58fd0': 1 });
+
+    expect(options.map(o => o.label)).toEqual(['Alfresco (55d96)', 'Alfresco (55d9b)', 'Alfresco (5ce5)']);
+  });
+
+  it('coloursSourcesByTheirPlaceInTheConfiguredListAlfrescoFirst', async () => {
+    await optionsFor({}, [NUXEO, BRANCH, HEAD_OFFICE]);
+
+    expect(service.colourClass(BRANCH.sourceId)).toBe('source-c1');
+    expect(service.colourClass(HEAD_OFFICE.sourceId)).toBe('source-c2');
+    expect(service.colourClass('nuxeo')).toBe('source-c3');
+    expect(service.colourClass('cmis:docmgr')).toBe('');
+  });
+
+  it('fallsBackToTheTwoKnownSourcesOnlyWhenNeitherListNamesOne', async () => {
+    // sourceCounts is empty whenever hxpr is down, and either request can fail outright. With nothing
+    // known the filter keeps the two options it always had.
+    const options = await optionsFor('failed', 'missing');
+
+    expect(options.map(o => o.key)).toEqual(['alfresco', 'nuxeo']);
+    expect(options.map(o => o.label)).toEqual(['Alfresco', 'Nuxeo']);
+  });
+
+  it('offersNoTypeThatNeitherListNames', async () => {
     const options = await optionsFor({ 'cmis:docmgr': 5 });
 
-    expect(options.map(o => o.key)).toEqual(['alfresco', 'nuxeo', 'cmis']);
-    expect(options.find(o => o.key === 'alfresco')?.count).toBe(0);
+    expect(options.map(o => o.key)).toEqual(['cmis']);
   });
 
-  it('fallsBackToTheTwoKnownSourcesWhenStatusFails', async () => {
-    // sourceCounts is empty whenever hxpr is down, and the request can fail outright. Neither may empty
-    // the filter: the UI has to stay at least as usable as the two hardcoded options it replaced.
-    const pending = firstValueFrom(service.options());
-    httpMock.expectOne(STATUS_URL).error(new ProgressEvent('network error'));
-
-    expect((await pending).map(o => o.key)).toEqual(['alfresco', 'nuxeo']);
-  });
-
-  it('addsAnOptionPerSourceIdOnlyWhenATypeHasSeveral', async () => {
-    const options = await optionsFor({
-      'cmis:docmgr': 12,
-      'cmis:archive': 30,
-      'nuxeo:prod': 40
-    });
-
-    // Two CMIS repositories are both "CMIS", so the id is what distinguishes them. A type with one
-    // repository gains no extra option, because there would be nothing to distinguish.
-    expect(options.map(o => o.key))
-      .toEqual(['alfresco', 'nuxeo', 'cmis', 'cmis:archive', 'cmis:docmgr']);
-    expect(options.filter(o => o.level === 'id').map(o => o.label))
-      .toEqual(['CMIS (archive)', 'CMIS (docmgr)']);
-  });
-
-  it('scopesATypeOptionThroughSourceTypeAndAnIdOptionThroughTheFilter', async () => {
-    const options = await optionsFor({ 'cmis:docmgr': 1, 'cmis:archive': 1 });
+  it('scopesATypeOptionByNamingItsSourcesAndAnIdOptionThroughTheFilter', async () => {
+    const options = await optionsFor({ 'cmis:docmgr': 1, 'cmis:archive': 1, 'nuxeo:prod': 1 });
 
     // A type is scoped by naming its sources, not through the sourceType request field: that field
     // filters on the source_type ingest property, which only the Alfresco and Nuxeo adapters populate,
     // so sourceType: 'cmis' matches nothing against a live index.
     const type = service.find(options, 'cmis')!;
-    // Order follows the status response, not the count-sorted order the id-level options use; for an
-    // OR it makes no difference.
     expect(service.scope(type)).toEqual({
-      filter: "cin_sourceId = 'cmis:docmgr' OR cin_sourceId = 'cmis:archive'"
+      filter: "cin_sourceId = 'cmis:archive' OR cin_sourceId = 'cmis:docmgr'"
     });
 
     // The request models carry no source id, so one repository can only be named in the filter.
@@ -118,10 +181,10 @@ describe('ContentSourceCatalogService', () => {
       .toBe("(cin_ingestProperties.source_mimeType = 'application/pdf') AND (cin_sourceId = 'cmis:docmgr')");
   });
 
-  it('fallsBackToSourceTypeOnlyForATypeTheIndexReportedNothingFor', async () => {
-    // Alfresco and Nuxeo are offered before anything is ingested into them, so they alone can have no
-    // known source ids. Both adapters do populate source_type, so the request field works for them.
-    const options = await optionsFor({ 'cmis:docmgr': 1 });
+  it('fallsBackToSourceTypeOnlyForATypeWithNoKnownSourceId', async () => {
+    // A configured Alfresco without an id, before anything is ingested into it. The adapter does populate
+    // source_type, so the request field works for it.
+    const options = await optionsFor({ 'cmis:docmgr': 1 }, [ALFRESCO]);
 
     const alfresco = service.find(options, 'alfresco')!;
     expect(alfresco.sourceKeys).toEqual([]);
@@ -137,9 +200,7 @@ describe('ContentSourceCatalogService', () => {
   });
 
   it('readsStatusOnceForEveryScreenThatAsks', async () => {
-    const first = firstValueFrom(service.options());
-    httpMock.expectOne(STATUS_URL).flush(status({ 'nuxeo:prod': 1 }));
-    await first;
+    await optionsFor({ 'nuxeo:prod': 1 });
 
     // The chat and search screens both ask; sourceCounts changes only when a new source is ingested.
     await firstValueFrom(service.options());
@@ -158,17 +219,9 @@ describe('ContentSourceCatalogService', () => {
 
     let auth: AuthService;
 
-    async function sourcesAre(sources: unknown[] | 'missing'): Promise<void> {
+    beforeEach(() => {
       auth = TestBed.inject(AuthService);
-      await new Promise(resolve => setTimeout(resolve, 0));
-      const request = httpMock.expectOne('/api/rag/sources');
-      if (sources === 'missing') {
-        request.flush('not found', { status: 404, statusText: 'Not Found' });
-      } else {
-        request.flush(sources);
-      }
-      await auth.ready;
-    }
+    });
 
     async function signInTo(sourceId: string): Promise<void> {
       const login = auth.login(sourceId, 'jdoe', 'pw');
@@ -181,8 +234,7 @@ describe('ContentSourceCatalogService', () => {
     }
 
     it('offersAnIdOptionOnlyWithASessionForThatVerySource', async () => {
-      await sourcesAre([ALF_A, ALF_B]);
-      const options = await optionsFor({ 'alfresco:aaa': 3, 'alfresco:bbb': 5, 'cmis:docmgr': 1 });
+      const options = await optionsFor({ 'alfresco:aaa': 3, 'alfresco:bbb': 5, 'cmis:docmgr': 1 }, [ALF_A, ALF_B]);
       const pick = (key: string) => service.find(options, key)!;
 
       expect(service.isSelectable(pick('alfresco:bbb'))).toBeFalse();
@@ -200,8 +252,7 @@ describe('ContentSourceCatalogService', () => {
 
     it('acceptsAnySessionOfTheTypeForAnIdTheSourceListDoesNotName', async () => {
       // An older backend: the list is the fallback, so no real source id is known.
-      await sourcesAre('missing');
-      const options = await optionsFor({ 'alfresco:aaa': 3, 'alfresco:bbb': 5 });
+      const options = await optionsFor({ 'alfresco:aaa': 3, 'alfresco:bbb': 5 }, 'missing');
 
       expect(service.isSelectable(service.find(options, 'alfresco:aaa')!)).toBeFalse();
 

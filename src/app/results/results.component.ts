@@ -1,12 +1,13 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { AuthService } from '../services/auth.service';
+import { ContentSourceCatalogService } from '../services/content-source-catalog.service';
 import { RagResult } from '../services/rag.service';
 import { sourceClass, sourceIcon } from '../utils/source-presentation';
 
 @Component({
   selector: 'app-results',
   template: `
-    <mat-card *ngFor="let r of results" class="result-card" [ngClass]="cardClass(r.source)">
+    <mat-card *ngFor="let r of results" class="result-card" [ngClass]="[cardClass(r.source), colourClass(r)]">
       <!-- Source identity stripe — 4px solid bar on left edge, color = source color -->
       <div class="result-stripe"></div>
 
@@ -18,7 +19,7 @@ import { sourceClass, sourceIcon } from '../utils/source-presentation';
 
           <div class="result-copy">
             <div class="result-topline">
-              <span class="source-badge" [ngClass]="badgeClass(r.source)">
+              <span class="source-badge" [ngClass]="[badgeClass(r.source), colourClass(r)]">
                 <mat-icon>{{ sourceIcon(r.source) }}</mat-icon>
                 {{ sourceLabel(r) }}
                 <!-- A type with several sources already names the source in the label. -->
@@ -97,8 +98,8 @@ import { sourceClass, sourceIcon } from '../utils/source-presentation';
       background: var(--cl-border-strong);
     }
 
-    .result-alfresco .result-stripe { background: var(--source-alfresco); }
-    .result-nuxeo    .result-stripe { background: var(--source-nuxeo); }
+    /* The card carries the source's source-c<n> class, which sets the --src variables read below. */
+    .result-card[class*='source-c'] .result-stripe { background: var(--src); }
 
     .result-shell {
       padding: 22px 24px 20px 26px;
@@ -133,14 +134,9 @@ import { sourceClass, sourceIcon } from '../utils/source-presentation';
       width: 20px;
     }
 
-    .result-icon-alfresco {
-      background: var(--source-alfresco-soft);
-      color: var(--source-alfresco-strong);
-    }
-
-    .result-icon-nuxeo {
-      background: var(--source-nuxeo-soft);
-      color: var(--source-nuxeo-strong);
+    .result-card[class*='source-c'] .result-icon {
+      background: var(--src-soft);
+      color: var(--src-strong);
     }
 
     .result-copy {
@@ -216,9 +212,8 @@ import { sourceClass, sourceIcon } from '../utils/source-presentation';
       word-break: break-word;
     }
 
-    .snippet-alfresco { border-left-color: rgba(120, 190, 32, 0.5); }
-    .snippet-nuxeo    { border-left-color: rgba(0, 163, 224, 0.45); }
     .snippet-generic  { border-left-color: var(--cl-border-strong); }
+    .result-card[class*='source-c'] .snippet { border-left-color: color-mix(in srgb, var(--src) 50%, transparent); }
 
     /* ---- Table chunks (#118) ---- */
 
@@ -291,16 +286,10 @@ import { sourceClass, sourceIcon } from '../utils/source-presentation';
       width: 15px;
     }
 
-    .open-button-alfresco {
-      color: var(--source-alfresco-strong);
-      border-color: rgba(120, 190, 32, 0.3);
-      background: var(--source-alfresco-soft);
-    }
-
-    .open-button-nuxeo {
-      color: var(--source-nuxeo-strong);
-      border-color: rgba(0, 163, 224, 0.25);
-      background: var(--source-nuxeo-soft);
+    .result-card[class*='source-c'] .open-button {
+      color: var(--src-strong);
+      border-color: color-mix(in srgb, var(--src) 30%, transparent);
+      background: var(--src-soft);
     }
   `]
 })
@@ -308,7 +297,7 @@ export class ResultsComponent {
   @Input() results: RagResult[] = [];
   @Output() select = new EventEmitter<RagResult>();
 
-  constructor(private auth: AuthService) {}
+  constructor(private auth: AuthService, private sources: ContentSourceCatalogService) {}
 
   truncatePath(path: string): string {
     if (!path || path.length <= 56) return path;
@@ -319,8 +308,11 @@ export class ResultsComponent {
 
   sourceIcon(source: string | undefined): string { return sourceIcon(source); }
 
-  /** The type, or the qualified source id when the type has more than one source. */
+  /** The source's display name, or its type with a short id. */
   sourceLabel(r: RagResult): string { return this.auth.resultSourceLabel(r.source, r.sourceId); }
+
+  /** The `source-c<n>` palette class of the hit's source. */
+  colourClass(r: RagResult): string { return this.sources.colourClass(r.sourceId || r.source); }
 
   severalSources(r: RagResult): boolean { return this.auth.hasSeveralSources(r.source); }
 

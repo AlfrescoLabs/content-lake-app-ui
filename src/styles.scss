@@ -125,6 +125,28 @@ html {
   --source-nuxeo-strong:    var(--hy-teal-dark);
   --source-nuxeo-soft:      var(--hy-teal-soft);
 
+  // Per-source palette, one slot per source in the order the source catalogue lists them. Slots 1 and 2
+  // are the Alfresco and Nuxeo colours, so one Alfresco and one Nuxeo look as they always have. Slots 3
+  // to 6 (indigo, amber, rose, slate) have a `-strong` value above 6.5:1 on white and on its `-soft`.
+  --source-1:        var(--hy-green);
+  --source-1-strong: var(--hy-green-dark);
+  --source-1-soft:   var(--hy-green-soft);
+  --source-2:        var(--hy-teal);
+  --source-2-strong: var(--hy-teal-dark);
+  --source-2-soft:   var(--hy-teal-soft);
+  --source-3:        #6366F1;
+  --source-3-strong: #4338CA;
+  --source-3-soft:   #EEF0FE;
+  --source-4:        #F59E0B;
+  --source-4-strong: #92400E;
+  --source-4-soft:   #FEF5E2;
+  --source-5:        #E11D48;
+  --source-5-strong: #9F1239;
+  --source-5-soft:   #FDECEF;
+  --source-6:        #64748B;
+  --source-6-strong: #334155;
+  --source-6-soft:   #EEF1F5;
+
   // -- Material MDC public token overrides ----------------------------------
   // Published MDC tokens only — no internal class selectors.
   --mdc-elevated-card-container-shape:  var(--radius-md);
@@ -302,6 +324,22 @@ a:focus-visible,
   background: var(--source-nuxeo-soft);
   color: var(--source-nuxeo-strong);
   border: 1px solid rgba(0, 130, 179, 0.2);
+}
+
+// One source's palette slot. The class sets `--src`, `--src-strong` and `--src-soft`, which a component's
+// own styles read, so the slot is bound once on an element and inherited by everything inside it.
+@for $i from 1 through 6 {
+  .source-c#{$i} {
+    --src:        var(--source-#{$i});
+    --src-strong: var(--source-#{$i}-strong);
+    --src-soft:   var(--source-#{$i}-soft);
+  }
+
+  .source-badge.source-c#{$i} {
+    background: var(--src-soft);
+    color: var(--src-strong);
+    border: 1px solid color-mix(in srgb, var(--src-strong) 20%, transparent);
+  }
 }
 
 // Every other source type: a neutral tag, so a CMIS or connector-sourced document is not drawn as if it

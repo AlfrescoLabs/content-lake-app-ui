@@ -3,7 +3,8 @@ import { Component, EventEmitter, Input, OnChanges, Output } from '@angular/core
 import { AuthService, SourceSessionView } from '../services/auth.service';
 import { ContentSourceType, RagResult, RagService } from '../services/rag.service';
 import { permissionVerdict } from '../utils/permission-verdict';
-import { SourceModifier, sourceClass, sourceIcon, sourceModifier } from '../utils/source-presentation';
+import { ContentSourceCatalogService } from '../services/content-source-catalog.service';
+import { sourceClass, sourceIcon } from '../utils/source-presentation';
 
 export interface CompareResult {
   username: string;
@@ -46,7 +47,7 @@ export function documentKey(result: RagResult): string {
                                    (ngModelChange)="compareSourceId = $event"
                                    class="compare-toggle">
             <mat-button-toggle *ngFor="let view of sources; trackBy: trackSource" [value]="view.source.sourceId">
-              <span class="toggle-label" [ngClass]="'toggle-label-' + modifierFor(view.source.sourceType)">
+              <span class="toggle-label" [ngClass]="colourFor(view.source.sourceId)">
                 <mat-icon>{{ iconFor(view.source.sourceType) }}</mat-icon>
                 {{ view.label }}
               </span>
@@ -86,7 +87,7 @@ export function documentKey(result: RagResult): string {
         <div *ngIf="compareResult" class="compare-results">
           <div class="score-grid">
 
-            <div class="score-card score-card-main" [ngClass]="scoreClass(mainSource)">
+            <div class="score-card score-card-main" [ngClass]="[scoreClass(mainSource), colourFor(mainSource)]">
               <span class="score-label">Current view</span>
               <strong class="score-count">{{ mainCount }}</strong>
               <span class="user-tag" [ngClass]="userTagClass(mainSource)">
@@ -94,7 +95,8 @@ export function documentKey(result: RagResult): string {
               </span>
             </div>
 
-            <div class="score-card score-card-compare" [ngClass]="scoreClass(compareResult.sourceType)">
+            <div class="score-card score-card-compare"
+                 [ngClass]="[scoreClass(compareResult.sourceType), colourFor(compareResult.sourceId)]">
               <span class="score-label">Comparison view</span>
               <strong class="score-count">{{ compareResult.count }}</strong>
               <span class="user-tag" [ngClass]="userTagClass(compareResult.sourceType)">
@@ -177,6 +179,7 @@ export function documentKey(result: RagResult): string {
       gap: 5px;
       font-weight: 600;
       font-size: 12px;
+      color: var(--src-strong, inherit);
     }
 
     .toggle-label mat-icon {
@@ -184,9 +187,6 @@ export function documentKey(result: RagResult): string {
       height: 15px;
       font-size: 15px;
     }
-
-    .toggle-label-alfresco { color: var(--source-alfresco-strong); }
-    .toggle-label-nuxeo    { color: var(--source-nuxeo-strong); }
 
     .compare-field {
       min-width: 0;
@@ -252,6 +252,12 @@ export function documentKey(result: RagResult): string {
       background: var(--source-nuxeo-soft);
     }
 
+    /* A card that names one source carries its source-c<n> palette class. */
+    .score-card[class*='source-c'] {
+      border-color: color-mix(in srgb, var(--src) 24%, transparent);
+      background: var(--src-soft);
+    }
+
     .score-label {
       color: var(--cl-text-soft);
       font-size: 10px;
@@ -288,6 +294,11 @@ export function documentKey(result: RagResult): string {
     .user-tag-nuxeo {
       background: rgba(0, 163, 224, 0.1);
       color: var(--source-nuxeo-strong);
+    }
+
+    .score-card[class*='source-c'] .user-tag {
+      background: color-mix(in srgb, var(--src) 12%, transparent);
+      color: var(--src-strong);
     }
 
     .verdict-box {
@@ -371,7 +382,7 @@ export class PermissionCompareComponent implements OnChanges {
   compareResult: CompareResult | null = null;
   autoExpand = false;
 
-  constructor(private auth: AuthService, private rag: RagService) {}
+  constructor(private auth: AuthService, private rag: RagService, private catalog: ContentSourceCatalogService) {}
 
   ngOnChanges(): void {
     this.autoExpand = this.mainResults.length === 0 && this.query.length > 0;
@@ -464,7 +475,8 @@ export class PermissionCompareComponent implements OnChanges {
 
   iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
 
-  modifierFor(sourceType?: string): SourceModifier { return sourceModifier(sourceType); }
+  /** The `source-c<n>` palette class of a source key, or of a type when it has a single source. */
+  colourFor(sourceKey: string | undefined): string { return this.catalog.colourClass(sourceKey); }
 
   trackSource(_i: number, view: SourceSessionView): string { return view.source.sourceId; }
 

@@ -1,6 +1,7 @@
 import { Component } from '@angular/core';
 import { Router } from '@angular/router';
 import { AuthService, SourceSessionView } from '../services/auth.service';
+import { ContentSourceCatalogService } from '../services/content-source-catalog.service';
 import { SourceModifier, sourceIcon, sourceModifier, sourceTypeLabel } from '../utils/source-presentation';
 
 /** What one login card holds while the user types. */
@@ -59,7 +60,7 @@ interface LoginForm {
           <div class="stat-dots">
             <span *ngFor="let view of views; trackBy: trackSource"
                   class="stat-dot"
-                  [ngClass]="view.session ? 'dot-' + modifierFor(view.source.sourceType) : 'dot-inactive'"></span>
+                  [ngClass]="view.session ? ['dot-' + modifierFor(view.source.sourceType), colourFor(view)] : 'dot-inactive'"></span>
           </div>
         </aside>
       </div>
@@ -71,6 +72,7 @@ interface LoginForm {
 
         <mat-card *ngFor="let view of views; trackBy: trackSource"
                   class="connect-card"
+                  [ngClass]="colourFor(view)"
                   [class.connect-ready]="view.session !== null">
           <div class="card-accent" [ngClass]="'card-accent-' + modifierFor(view.source.sourceType)"></div>
           <div class="connect-card-shell" *ngIf="formFor(view.source.sourceId) as form">
@@ -308,20 +310,16 @@ interface LoginForm {
       border: 2px solid rgba(255, 255, 255, 0.4);
     }
 
-    .dot-alfresco {
-      background: var(--source-alfresco);
-      border-color: var(--source-alfresco);
-      box-shadow: 0 0 0 4px rgba(120, 190, 32, 0.25);
-    }
-    .dot-nuxeo {
-      background: var(--source-nuxeo);
-      border-color: var(--source-nuxeo);
-      box-shadow: 0 0 0 4px rgba(0, 163, 224, 0.25);
-    }
     .dot-sharepoint,
     .dot-generic {
       background: var(--hy-mark-teal);
       border-color: var(--hy-mark-teal);
+    }
+    /* A dot, card accent and icon carry the source's source-c<n> palette class. */
+    .stat-dot[class*='source-c'] {
+      background: var(--src);
+      border-color: var(--src);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--src) 25%, transparent);
     }
     .dot-inactive { background: transparent; }
 
@@ -367,17 +365,15 @@ interface LoginForm {
       height: 4px;
     }
 
-    .card-accent-alfresco {
-      background: linear-gradient(90deg, var(--source-alfresco) 0%, rgba(120, 190, 32, 0.2) 100%);
-    }
-
-    .card-accent-nuxeo {
-      background: linear-gradient(90deg, var(--source-nuxeo) 0%, rgba(0, 163, 224, 0.2) 100%);
-    }
-
+    .card-accent-alfresco,
+    .card-accent-nuxeo,
     .card-accent-sharepoint,
     .card-accent-generic {
       background: linear-gradient(90deg, var(--cl-border-strong) 0%, var(--cl-border) 100%);
+    }
+
+    .connect-card[class*='source-c'] .card-accent {
+      background: linear-gradient(90deg, var(--src) 0%, color-mix(in srgb, var(--src) 20%, transparent) 100%);
     }
 
     .connect-card-shell {
@@ -410,14 +406,9 @@ interface LoginForm {
       width: 26px;
     }
 
-    .connect-icon-alfresco {
-      background: var(--source-alfresco-soft);
-      color: var(--source-alfresco-strong);
-    }
-
-    .connect-icon-nuxeo {
-      background: var(--source-nuxeo-soft);
-      color: var(--source-nuxeo-strong);
+    .connect-card[class*='source-c'] .connect-icon {
+      background: var(--src-soft);
+      color: var(--src-strong);
     }
 
     .connect-icon-sharepoint,
@@ -596,7 +587,7 @@ interface LoginForm {
 export class AuthComponent {
   private forms = new Map<string, LoginForm>();
 
-  constructor(private auth: AuthService, private router: Router) {}
+  constructor(private auth: AuthService, private router: Router, private sources: ContentSourceCatalogService) {}
 
   /** One card per source with a login, in the order rag-service lists them. */
   get views(): SourceSessionView[] { return this.auth.sessionViews(); }
@@ -626,6 +617,9 @@ export class AuthComponent {
   modifierFor(sourceType?: string): SourceModifier { return sourceModifier(sourceType); }
 
   typeLabel(sourceType?: string): string { return sourceTypeLabel(sourceType); }
+
+  /** The source's `source-c<n>` palette class, the same one its filter option and results carry. */
+  colourFor(view: SourceSessionView): string { return this.sources.colourClass(view.source.sourceId); }
 
   trackSource(_i: number, view: SourceSessionView): string { return view.source.sourceId; }
 

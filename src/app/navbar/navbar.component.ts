@@ -3,7 +3,8 @@ import { Router } from '@angular/router';
 import { Observable } from 'rxjs';
 import { AuthService, SourceSessionView } from '../services/auth.service';
 import { ConnectorService } from '../services/connector.service';
-import { SourceModifier, sourceIcon, sourceModifier } from '../utils/source-presentation';
+import { ContentSourceCatalogService } from '../services/content-source-catalog.service';
+import { sourceIcon } from '../utils/source-presentation';
 
 // Satori App Chrome integration point:
 // When Satori's Application Shell header component is available, replace this
@@ -55,7 +56,7 @@ import { SourceModifier, sourceIcon, sourceModifier } from '../utils/source-pres
 
           <div *ngFor="let view of views$ | async; trackBy: trackSource"
                class="session-pill"
-               [ngClass]="'session-pill-' + modifierFor(view.source.sourceType)"
+               [ngClass]="colourFor(view.source.sourceId)"
                [class.connected]="view.session !== null">
             <mat-icon class="session-icon">{{ iconFor(view.source.sourceType) }}</mat-icon>
             <span class="session-label">
@@ -259,17 +260,11 @@ import { SourceModifier, sourceIcon, sourceModifier } from '../utils/source-pres
 
     .connected .session-icon { color: var(--hy-gray-500); }
 
-    .session-pill-alfresco.connected .session-icon { color: var(--source-alfresco-strong); }
-    .session-pill-nuxeo.connected   .session-icon { color: var(--source-nuxeo-strong); }
+    .session-pill[class*='source-c'].connected .session-icon { color: var(--src-strong); }
 
-    .session-pill-alfresco.connected {
-      border-color: rgba(120, 190, 32, 0.35);
-      background: rgba(239, 248, 223, 0.6);
-    }
-
-    .session-pill-nuxeo.connected {
-      border-color: rgba(0, 163, 224, 0.3);
-      background: rgba(229, 246, 252, 0.6);
+    .session-pill[class*='source-c'].connected {
+      border-color: color-mix(in srgb, var(--src) 35%, transparent);
+      background: color-mix(in srgb, var(--src-soft) 60%, transparent);
     }
 
     .session-label {
@@ -358,7 +353,12 @@ export class NavbarComponent {
   /** One pill per source with a login, in the order rag-service lists them. */
   views$: Observable<SourceSessionView[]>;
 
-  constructor(public router: Router, private auth: AuthService, private connectors: ConnectorService) {
+  constructor(
+    public router: Router,
+    private auth: AuthService,
+    private connectors: ConnectorService,
+    private sources: ContentSourceCatalogService
+  ) {
     this.views$ = auth.sessionViews$;
   }
 
@@ -375,7 +375,8 @@ export class NavbarComponent {
 
   iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
 
-  modifierFor(sourceType?: string): SourceModifier { return sourceModifier(sourceType); }
+  /** The source's `source-c<n>` palette class, the same one its filter option and results carry. */
+  colourFor(sourceKey: string): string { return this.sources.colourClass(sourceKey); }
 
   trackSource(_i: number, view: SourceSessionView): string { return view.source.sourceId; }
 

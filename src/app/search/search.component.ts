@@ -12,7 +12,6 @@ import {
 import {
   SourceModifier,
   sourceIcon,
-  sourceKeyLabel,
   sourceModifier,
   sourceTypeLabel
 } from '../utils/source-presentation';
@@ -34,6 +33,8 @@ interface SearchContext {
   namedQuery?: string;
   sourceLabel: string;
   sourceModifier: SourceModifier;
+  /** The selected source's `source-c<n>` colour class, '' for a type with several sources. */
+  sourceColour: string;
   /** The sessions the search ran with, one chip each. */
   users: SearchContextUser[];
   resultCount: number;
@@ -43,6 +44,7 @@ interface SearchContext {
 
 /** One identity the last search ran as. */
 interface SearchContextUser {
+  sourceId: string;
   sourceType: string;
   label: string;
   username: string;
@@ -95,7 +97,7 @@ interface SearchContextUser {
           <div class="hero-session-list">
             <div *ngFor="let view of sessionViews; trackBy: trackSource"
                  class="hero-session"
-                 [ngClass]="'hero-session-' + modifierFor(view.source.sourceType)"
+                 [ngClass]="sourceColour(view.source.sourceId)"
                  [class.connected]="view.session !== null">
               <div class="session-indicator" [class.active]="view.session !== null"></div>
               <mat-icon class="session-src-icon">{{ iconFor(view.source.sourceType) }}</mat-icon>
@@ -146,7 +148,7 @@ interface SearchContextUser {
                                [value]="option.key"
                                [disabled]="!isSelectable(option)"
                                [matTooltip]="sourceTooltip(option)">
-              <span class="toggle-label" [ngClass]="'toggle-label-' + modifierFor(option.sourceType)">
+              <span class="toggle-label" [ngClass]="colourFor(option)">
                 <mat-icon>{{ iconFor(option.sourceType) }}</mat-icon>
                 {{ option.label }}
               </span>
@@ -197,7 +199,7 @@ interface SearchContextUser {
           <!-- The source is named only when its type alone does not say which one it is. -->
           <span *ngFor="let user of ctx.users"
                 class="ctx-user"
-                [ngClass]="'ctx-user-' + modifierFor(user.sourceType)"
+                [ngClass]="sourceColour(user.sourceId)"
                 [matTooltip]="user.label">
             <mat-icon>{{ iconFor(user.sourceType) }}</mat-icon>
             {{ user.username }}
@@ -221,7 +223,7 @@ interface SearchContextUser {
           </span>
           <span *ngIf="ctx.sourceLabel"
                 class="source-badge"
-                [ngClass]="'source-badge-' + ctx.sourceModifier">
+                [ngClass]="['source-badge-' + ctx.sourceModifier, ctx.sourceColour]">
             <mat-icon>{{ iconFor(ctx.sourceType) }}</mat-icon>
             {{ ctx.sourceLabel }} only
           </span>
@@ -468,14 +470,9 @@ interface SearchContextUser {
       box-shadow: 0 0 0 4px rgba(46, 125, 50, 0.15);
     }
 
-    .hero-session-alfresco .session-indicator.active {
-      background: var(--source-alfresco);
-      box-shadow: 0 0 0 4px rgba(120, 190, 32, 0.2);
-    }
-
-    .hero-session-nuxeo .session-indicator.active {
-      background: var(--source-nuxeo);
-      box-shadow: 0 0 0 4px rgba(0, 163, 224, 0.2);
+    .hero-session[class*='source-c'] .session-indicator.active {
+      background: var(--src);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--src) 20%, transparent);
     }
 
     .session-src-icon {
@@ -488,8 +485,7 @@ interface SearchContextUser {
 
     .connected .session-src-icon { opacity: 1; }
 
-    .hero-session-alfresco.connected .session-src-icon { color: var(--source-alfresco-strong); }
-    .hero-session-nuxeo.connected .session-src-icon { color: var(--source-nuxeo-strong); }
+    .hero-session.connected .session-src-icon { color: var(--src-strong, inherit); }
 
     .session-info strong,
     .session-info span {
@@ -592,12 +588,14 @@ interface SearchContextUser {
       border-radius: var(--radius-sm);
     }
 
+    /* The source's palette slot, or a readable neutral for a type-level option over several sources. */
     .toggle-label {
       display: inline-flex;
       align-items: center;
       gap: 5px;
       font-weight: 600;
       font-size: 12px;
+      color: var(--src-strong, var(--cl-text-muted));
     }
 
     .toggle-label mat-icon {
@@ -605,11 +603,6 @@ interface SearchContextUser {
       height: 15px;
       width: 15px;
     }
-
-    .toggle-label-alfresco { color: var(--source-alfresco-strong); }
-    .toggle-label-nuxeo    { color: var(--source-nuxeo-strong); }
-    /* Any other source type: readable, and not borrowing either repository's colour (#9). */
-    .toggle-label-generic  { color: var(--cl-text-muted); }
 
     .search-advanced {
       display: flex;
@@ -690,14 +683,9 @@ interface SearchContextUser {
       width: 13px;
     }
 
-    .ctx-user-alfresco {
-      background: var(--source-alfresco-soft);
-      color: var(--source-alfresco-strong);
-    }
-
-    .ctx-user-nuxeo {
-      background: var(--source-nuxeo-soft);
-      color: var(--source-nuxeo-strong);
+    .ctx-user[class*='source-c'] {
+      background: var(--src-soft);
+      color: var(--src-strong);
     }
 
     .ctx-empty {
@@ -905,8 +893,13 @@ export class SearchComponent implements OnInit {
   sourceTooltip(option: ContentSourceOption): string {
     if (!this.isSelectable(option)) return `Log in to ${option.label} first`;
     const docs = `${option.count} document${option.count !== 1 ? 's' : ''} indexed`;
-    return `${option.label} only (${docs})`;
+    const id = option.level === 'id' ? ` - ${option.key}` : '';
+    return `${option.label} only (${docs})${id}`;
   }
+
+  colourFor(option: ContentSourceOption): string { return this.sources.optionColourClass(option); }
+
+  sourceColour(sourceKey: string): string { return this.sources.colourClass(sourceKey); }
 
   iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
 
@@ -947,7 +940,12 @@ export class SearchComponent implements OnInit {
 
     const users: SearchContextUser[] = this.auth.sessionViews()
       .filter(view => view.session !== null)
-      .map(view => ({ sourceType: view.source.sourceType, label: view.label, username: view.session!.username }));
+      .map(view => ({
+        sourceId: view.source.sourceId,
+        sourceType: view.source.sourceType,
+        label: view.label,
+        username: view.session!.username
+      }));
 
     this.rag.search(this.query, {
       sourceType: scope.sourceType,
@@ -967,6 +965,7 @@ export class SearchComponent implements OnInit {
           namedQuery,
           sourceLabel: selected?.label ?? '',
           sourceModifier: sourceModifier(selected?.sourceType),
+          sourceColour: selected ? this.sources.optionColourClass(selected) : '',
           users,
           resultCount: outcome.results.length,
           documentCount: outcome.documentCount,
@@ -1036,7 +1035,7 @@ export class SearchComponent implements OnInit {
     }
     // cin_sourceId buckets are `<sourceType>:<sourceId>`, which is not a label.
     if (property === 'cin_sourceId') {
-      return sourceKeyLabel(value);
+      return this.sources.label(value);
     }
     return value;
   }

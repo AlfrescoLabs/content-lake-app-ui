@@ -1,48 +1,65 @@
 import { Injectable } from '@angular/core';
-import { Observable, catchError, map, of, shareReplay } from 'rxjs';
+import { Observable, catchError, forkJoin, from, map, of, shareReplay } from 'rxjs';
 import { RagService } from './rag.service';
 import { AuthService } from './auth.service';
-import { sourceKeyLabel, sourceTypeLabel, splitSourceKey } from '../utils/source-presentation';
+import {
+  SourceRef,
+  findSourceRef,
+  sourceColourClass,
+  sourceDisplayLabel,
+  sourceTypeLabel,
+  splitSourceKey
+} from '../utils/source-presentation';
 import { combineFilters, sourceIdClause, sourceIdsClause } from '../utils/hxql';
 
 /**
- * What sources the index holds, and how to scope a search to one of them (#9).
+ * What sources exist, and how to scope a search to one of them (#9).
  *
- * The list is derived from `GET /api/status`'s `sourceCounts`, whose keys are the stored `cin_sourceId`
- * values (`<sourceType>:<sourceId>`). That is the set of sources the index actually holds, so a source
- * type this build has never heard of - a CMIS repository, a plugin connector, a filesystem tree - is
- * offered without any change here. Two properties of that map shape this service:
+ * Two lists feed it, merged into one:
  *
- * - it covers the whole index rather than what the caller may read, which is fine for an option list;
- * - `StatusController` populates it only while hxpr is UP, so a hxpr blip returns it empty.
+ * - `GET /api/rag/sources` (through {@link AuthService}), the sources rag-service is configured with,
+ *   which carry their display names;
+ * - `GET /api/status`'s `sourceCounts`, whose keys are the stored `cin_sourceId` values
+ *   (`<sourceType>:<sourceId>`). That is the set of sources the index actually holds, so a source type this
+ *   build has never heard of - a CMIS repository, a plugin connector, a filesystem tree - is offered
+ *   without any change here. It covers the whole index rather than what the caller may read, and
+ *   `StatusController` populates it only while hxpr is UP, so a hxpr blip returns it empty.
  *
- * Hence {@link FALLBACK_TYPES}: Alfresco and Nuxeo are always offered, whether or not they appear, so an
- * empty or failed status response leaves the filter no worse than the two hardcoded options it replaced.
+ * A type is offered only when one of the two lists holds a source of it. {@link FALLBACK_TYPES} is used
+ * only when both are empty or failed, so an older backend still gets the two options it always had.
  */
 @Injectable({ providedIn: 'root' })
 export class ContentSourceCatalogService {
 
-  /** Always offered, because a fresh stack has no documents and login is the real precondition. */
+  /** Offered only when neither list names a source, and drawn first in any list. */
   static readonly FALLBACK_TYPES: readonly string[] = ['alfresco', 'nuxeo'];
 
   /** The "every source" option's key. Empty so it can be an `<option value="">`-style default. */
   static readonly ALL_SOURCES = '';
 
   private cached?: Observable<ContentSourceOption[]>;
+  private known?: KnownSource[];
 
   constructor(private rag: RagService, private auth: AuthService) {}
 
   /**
-   * The options to offer, one per source type, plus one per source id where a type has several.
+   * The options to offer: one per source, plus one per type that has several sources while another type
+   * exists too. A type with a single source is one type-level option, labelled with that source's name.
    *
    * Cached for the lifetime of the app: `sourceCounts` changes only when a new source is ingested into,
    * and both the search and chat screens ask for it.
    */
   options(): Observable<ContentSourceOption[]> {
     if (!this.cached) {
-      this.cached = this.rag.getStatus().pipe(
-        map((status) => this.derive(status?.sourceCounts ?? {})),
-        catchError(() => of(this.derive({}))),
+      const status = this.rag.getStatus().pipe(
+        map((body) => body?.sourceCounts ?? {}),
+        catchError(() => of({} as Record<string, number>))
+      );
+      this.cached = forkJoin([from(this.auth.ready.catch(() => undefined)), status]).pipe(
+        map(([, sourceCounts]) => {
+          this.known = this.merge(sourceCounts);
+          return this.derive(this.known);
+        }),
         shareReplay({ bufferSize: 1, refCount: false })
       );
     }
@@ -52,6 +69,30 @@ export class ContentSourceCatalogService {
   /** Drops the cache so the next `options()` call re-reads `/api/status`. */
   refresh(): void {
     this.cached = undefined;
+  }
+
+  /**
+   * Every known source, in colour order: the configured ones first, in the order rag-service lists them
+   * with Alfresco and Nuxeo ahead of other types, then the ones only the index holds. Until `options()`
+   * has loaded, the configured list alone.
+   */
+  knownSources(): KnownSource[] {
+    return this.known ?? this.merge({});
+  }
+
+  /** The display name of a `<sourceType>:<sourceId>` key. */
+  label(sourceKey: string | undefined): string {
+    return sourceDisplayLabel(sourceKey, this.knownSources());
+  }
+
+  /** The `source-c<n>` colour class of a key, or '' for a source no list holds. */
+  colourClass(sourceKey: string | undefined): string {
+    return sourceColourClass(sourceKey, this.knownSources());
+  }
+
+  /** The colour of the one source an option covers, or '' for a type-level option over several. */
+  optionColourClass(option: ContentSourceOption): string {
+    return this.colourClass(option.sourceKeys.length === 1 ? option.sourceKeys[0] : option.key);
   }
 
   /**
@@ -103,57 +144,125 @@ export class ContentSourceCatalogService {
     return options.find((option) => option.key === key);
   }
 
-  private derive(sourceCounts: Record<string, number>): ContentSourceOption[] {
-    const idsByType = new Map<string, { sourceId: string; key: string; count: number }[]>();
+  /**
+   * The configured sources and the indexed ones as one list. A configured entry with a bare type takes the
+   * id of the one indexed source of its type, if the index holds exactly one.
+   */
+  private merge(sourceCounts: Record<string, number>): KnownSource[] {
+    const configured: KnownSource[] = (this.auth.hasSourceList() ? this.auth.getSources() : [])
+      .map((source) => ({
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        displayName: source.displayName,
+        count: 0
+      }))
+      .sort((a, b) => typeRank(a.sourceType) - typeRank(b.sourceType));
 
+    const indexed: KnownSource[] = [];
     for (const [key, count] of Object.entries(sourceCounts ?? {})) {
       const { sourceType, sourceId } = splitSourceKey(key);
-      if (!sourceType) continue;
-      const ids = idsByType.get(sourceType) ?? [];
-      ids.push({ sourceId, key, count: count ?? 0 });
-      idsByType.set(sourceType, ids);
+      if (!sourceType || !sourceId) continue;
+      indexed.push({ sourceId: key, sourceType, displayName: '', count: count ?? 0 });
     }
 
-    for (const type of ContentSourceCatalogService.FALLBACK_TYPES) {
-      if (!idsByType.has(type)) idsByType.set(type, []);
+    const unlisted: KnownSource[] = [];
+    for (const entry of indexed) {
+      const exact = configured.find((source) => source.sourceId === entry.sourceId);
+      const sameType = indexed.filter((other) => other.sourceType === entry.sourceType);
+      // findSourceRef answers a bare entry only when it is the one configured source of the type.
+      const bare = !exact && sameType.length === 1 ? findSourceRef(entry.sourceId, configured) : undefined;
+      const target = exact ?? bare;
+      if (target) {
+        target.sourceId = entry.sourceId;
+        target.count = entry.count;
+      } else {
+        unlisted.push(entry);
+      }
+    }
+    unlisted.sort((a, b) => byFallbackFirstThenName(a.sourceType, b.sourceType)
+      || b.count - a.count || a.sourceId.localeCompare(b.sourceId));
+
+    // A bare entry left beside indexed sources of its type cannot tell which of them it is, and they
+    // already name every source of the type.
+    const listed = configured.filter((source) => splitSourceKey(source.sourceId).sourceId
+      || !unlisted.some((entry) => entry.sourceType === source.sourceType));
+    const known = [...listed, ...unlisted];
+
+    if (known.length > 0) return known;
+    return ContentSourceCatalogService.FALLBACK_TYPES.map((type) => ({
+      sourceId: type,
+      sourceType: type,
+      displayName: sourceTypeLabel(type),
+      count: 0
+    }));
+  }
+
+  private derive(known: KnownSource[]): ContentSourceOption[] {
+    const byType = new Map<string, KnownSource[]>();
+    for (const source of known) {
+      byType.set(source.sourceType, [...(byType.get(source.sourceType) ?? []), source]);
     }
 
+    const types = [...byType.keys()].sort(byFallbackFirstThenName);
     const options: ContentSourceOption[] = [];
-    const types = [...idsByType.keys()].sort(byFallbackFirstThenName);
 
     for (const sourceType of types) {
-      const ids = idsByType.get(sourceType) ?? [];
-      const count = ids.reduce((total, id) => total + id.count, 0);
+      const sources = byType.get(sourceType) ?? [];
+      const loginGated = ContentSourceCatalogService.FALLBACK_TYPES.includes(sourceType);
+      const sourceKeys = sources.map((source) => source.sourceId).filter((key) => splitSourceKey(key).sourceId);
+      const count = sources.reduce((total, source) => total + source.count, 0);
 
-      options.push({
-        key: sourceType,
-        level: 'type',
-        sourceType,
-        label: sourceTypeLabel(sourceType),
-        sourceKeys: ids.map((id) => id.key),
-        count,
-        loginGated: ContentSourceCatalogService.FALLBACK_TYPES.includes(sourceType)
-      });
+      // One source is the whole type, so it stays a type-level option: one Alfresco and one Nuxeo read
+      // and scope exactly as they always have.
+      if (sources.length === 1) {
+        options.push({
+          key: sourceType,
+          level: 'type',
+          sourceType,
+          label: sourceDisplayLabel(sources[0].sourceId, known),
+          sourceKeys,
+          count,
+          loginGated
+        });
+        continue;
+      }
 
-      // Only worth distinguishing when the type has more than one repository behind it.
-      if (ids.length > 1) {
-        for (const id of [...ids].sort((a, b) => b.count - a.count)) {
-          options.push({
-            key: id.key,
-            level: 'id',
-            sourceType,
-            sourceId: id.sourceId,
-            label: sourceKeyLabel(id.key),
-            sourceKeys: [id.key],
-            count: id.count,
-            loginGated: ContentSourceCatalogService.FALLBACK_TYPES.includes(sourceType)
-          });
-        }
+      // "All Alfresco" next to "All sources" would offer the same thing twice.
+      if (types.length > 1) {
+        options.push({
+          key: sourceType,
+          level: 'type',
+          sourceType,
+          label: `All ${sourceTypeLabel(sourceType)}`,
+          sourceKeys,
+          count,
+          loginGated
+        });
+      }
+
+      for (const source of sources) {
+        options.push({
+          key: source.sourceId,
+          level: 'id',
+          sourceType,
+          sourceId: splitSourceKey(source.sourceId).sourceId,
+          label: sourceDisplayLabel(source.sourceId, known),
+          sourceKeys: [source.sourceId],
+          count: source.count,
+          loginGated
+        });
       }
     }
 
     return options;
   }
+}
+
+/** One source either list names, with the documents the index holds for it. */
+export interface KnownSource extends SourceRef {
+  sourceType: string;
+  displayName: string;
+  count: number;
 }
 
 /** One selectable source: a whole type, or one repository within a type. */
@@ -181,10 +290,11 @@ export interface SourceScope {
   filter?: string;
 }
 
+function typeRank(type: string): number {
+  const idx = ContentSourceCatalogService.FALLBACK_TYPES.indexOf(type);
+  return idx < 0 ? ContentSourceCatalogService.FALLBACK_TYPES.length : idx;
+}
+
 function byFallbackFirstThenName(a: string, b: string): number {
-  const rank = (type: string) => {
-    const idx = ContentSourceCatalogService.FALLBACK_TYPES.indexOf(type);
-    return idx < 0 ? ContentSourceCatalogService.FALLBACK_TYPES.length : idx;
-  };
-  return rank(a) - rank(b) || a.localeCompare(b);
+  return typeRank(a) - typeRank(b) || a.localeCompare(b);
 }

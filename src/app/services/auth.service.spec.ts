@@ -99,18 +99,32 @@ describe('AuthService', () => {
     });
 
     it('keepsTheTypeLabelForOneAlfrescoAndOneNuxeo', async () => {
-      const service = await serviceWith([ALF_A, NUX]);
+      // rag-service answers the type label as the display name of the only source of a type.
+      const service = await serviceWith([{ ...ALF_A, displayName: 'Alfresco' }, NUX]);
 
       expect(service.sessionViews().map(v => v.label)).toEqual(['Alfresco', 'Nuxeo']);
       expect(service.isLegacyTopology()).toBeTrue();
       expect(service.resultSourceLabel('alfresco', 'alfresco:aaa')).toBe('Alfresco');
     });
 
-    it('labelsAResultByItsSourceIdOnlyWhenTheTypeHasSeveral', async () => {
+    it('labelsAResultByTheDisplayNameOfItsSource', async () => {
       const service = await serviceWith([ALF_A, ALF_B, NUX]);
 
-      expect(service.resultSourceLabel('alfresco', 'alfresco:bbb')).toBe('Alfresco (bbb)');
+      expect(service.resultSourceLabel('alfresco', 'alfresco:bbb')).toBe('Alfresco Archive');
       expect(service.resultSourceLabel('nuxeo', 'nuxeo:prod')).toBe('Nuxeo');
+      // Without a source id the type alone names no single source.
+      expect(service.resultSourceLabel('alfresco')).toBe('Alfresco');
+    });
+
+    it('labelsASourceWithoutAConfiguredNameByAShortId', async () => {
+      // rag-service fills an unnamed source's display name with the type and the full id.
+      const service = await serviceWith([
+        { ...ALF_A, sourceId: 'alfresco:55d96fae-1', displayName: 'Alfresco (55d96fae-1)' },
+        { ...ALF_B, sourceId: 'alfresco:5ce58fd0-2', displayName: 'Alfresco (5ce58fd0-2)' }
+      ]);
+
+      expect(service.sessionViews().map(v => v.label)).toEqual(['Alfresco (55d9)', 'Alfresco (5ce5)']);
+      expect(service.resultSourceLabel('alfresco', 'alfresco:5ce58fd0-2')).toBe('Alfresco (5ce5)');
     });
   });
 
