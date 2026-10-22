@@ -1,4 +1,6 @@
 import { Injectable } from '@angular/core';
+import { Observable, Subject } from 'rxjs';
+import { AuthService } from './auth.service';
 import { ChatMessage } from './rag.service';
 
 interface ChatSessionRecord {
@@ -37,12 +39,28 @@ export interface ChatSessionSummary {
 /**
  * Persists chat sessions in sessionStorage so state survives route changes
  * but is cleared when the browser tab is closed.
+ *
+ * The history belongs to the signed-in user ({@link AuthService.owner$}). A demo signs users in and out
+ * on the same tab, and sessionStorage survives that, so the store is wiped when everyone signs out and
+ * discarded when a different user signs in. A stored history for another owner is never loaded.
  */
 @Injectable({ providedIn: 'root' })
 export class ChatSessionService {
 
   private static readonly KEY = 'content-lake.chat.sessions.v1';
   private state: SessionState = this.load();
+  /** The owner {@link state} belongs to; null until the restored sessions are known. */
+  private owner: string | null = null;
+  private readonly cleared$$ = new Subject<void>();
+
+  /** Emits when the history is wiped for a new owner, so a view can drop what it shows. */
+  readonly cleared$: Observable<void> = this.cleared$$.asObservable();
+
+  constructor(auth: AuthService) {
+    // Only after the restored sessions are validated: before that the tab looks signed out, and acting
+    // on that would wipe the history on every reload.
+    auth.ready.then(() => auth.owner$.subscribe(owner => this.adopt(owner)));
+  }
 
   ensureActiveSession(): string {
     const current = this.state.activeSessionId;
@@ -176,6 +194,27 @@ export class ChatSessionService {
     return `ui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
+  private adopt(owner: string): void {
+    const stored = this.storedOwner();
+    if (this.owner === null && stored === owner) {
+      this.owner = owner;
+      return;
+    }
+    if (this.owner === owner) return;
+    this.owner = owner;
+    this.state = { activeSessionId: null, sessions: [] };
+    this.persist();
+    this.cleared$$.next();
+  }
+
+  private storedOwner(): string | null {
+    if (typeof sessionStorage === 'undefined') return null;
+    try {
+      const raw = sessionStorage.getItem(ChatSessionService.KEY);
+      return raw ? (JSON.parse(raw).owner ?? null) : null;
+    } catch { return null; }
+  }
+
   private load(): SessionState {
     const empty: SessionState = { activeSessionId: null, sessions: [] };
     if (typeof sessionStorage === 'undefined') return empty;
@@ -201,6 +240,7 @@ export class ChatSessionService {
   private persist(): void {
     if (typeof sessionStorage === 'undefined') return;
     sessionStorage.setItem(ChatSessionService.KEY, JSON.stringify({
+      owner: this.owner ?? this.storedOwner(),
       activeSessionId: this.state.activeSessionId,
       sessions: this.state.sessions.map(s => ({
         sessionId: s.sessionId,

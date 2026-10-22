@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { BehaviorSubject, Observable, combineLatest, firstValueFrom, of } from 'rxjs';
-import { catchError, map } from 'rxjs/operators';
+import { catchError, distinctUntilChanged, map } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
 import { resolveConnectorUrls, resolveStatusUrl } from '../utils/api-paths';
 import { sourceDisplayLabel } from '../utils/source-presentation';
@@ -97,6 +97,13 @@ export class AuthService {
 
   readonly sources$ = this.sources$$.asObservable();
   readonly sessions$: Observable<SourceSession[]> = this.sessions$$.pipe(map(m => [...m.values()]));
+
+  /**
+   * Who the tab is signed in as: the distinct usernames of every session, sorted and joined, or '' with no
+   * session. The chat history belongs to this owner. Signing in to a second repository as the same user
+   * keeps it; signing out of everything, or signing in as someone else, changes it.
+   */
+  readonly owner$: Observable<string> = this.sessions$$.pipe(map(m => ownerOf(m)), distinctUntilChanged());
   readonly ingesterSession$ = this.ingester$.asObservable();
 
   /** Every login-capable source with its session, in source-list order. */
@@ -484,6 +491,11 @@ export class AuthService {
     this.sessions$$.next(next);
     this.persistSessions();
   }
+}
+
+/** See {@link AuthService.owner$}. */
+function ownerOf(sessions: Map<string, SourceSession>): string {
+  return [...new Set([...sessions.values()].map(s => s.username))].sort().join(',');
 }
 
 /** The legacy `Authorization` value for an Alfresco session. */

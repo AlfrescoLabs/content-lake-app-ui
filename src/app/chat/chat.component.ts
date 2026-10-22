@@ -1,5 +1,6 @@
 import { AfterViewChecked, Component, ElementRef, OnInit, ViewChild } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
+import { Subscription } from 'rxjs';
 import { AuthService } from '../services/auth.service';
 import { ChatSessionService, ChatSessionSummary } from '../services/chat-session.service';
 import {
@@ -1033,6 +1034,9 @@ export class ChatComponent implements OnInit, AfterViewChecked {
   private lastTokenPersistMs = 0;
   private static readonly TOKEN_PERSIST_INTERVAL_MS = 400;
 
+  /** The answer being fetched, so a change of user can cancel it. */
+  private answer?: Subscription;
+
   constructor(
     private auth: AuthService,
     private rag: RagService,
@@ -1042,6 +1046,16 @@ export class ChatComponent implements OnInit, AfterViewChecked {
   ) {}
 
   ngOnInit(): void {
+    // A new owner wipes the history. Drop the answer still streaming too, so a late token cannot be saved
+    // into the next user's conversation.
+    this.sessions.cleared$.subscribe(() => {
+      this.answer?.unsubscribe();
+      this.answer = undefined;
+      this.streamBuffers.clear();
+      this.activeSessionId = this.sessions.ensureActiveSession();
+      this.messages = [];
+      this.refreshSummaries();
+    });
     this.activeSessionId = this.sessions.ensureActiveSession();
     this.messages = this.sessions.getMessages(this.activeSessionId);
     this.healInterruptedMessages();
@@ -1116,7 +1130,7 @@ export class ChatComponent implements OnInit, AfterViewChecked {
       ...(this.structuredMode ? { responseFormat: 'STRUCTURED' as const } : {})
     };
 
-    this.rag.streamPrompt(q, opts).subscribe({
+    this.answer = this.rag.streamPrompt(q, opts).subscribe({
       next: event => {
         if (event.type === 'token') {
           const buf = (this.streamBuffers.get(assistantMsg.id) ?? '') + event.token;
@@ -1271,7 +1285,7 @@ export class ChatComponent implements OnInit, AfterViewChecked {
     assistantMsg: ChatMessage,
     opts: RagPromptOptions
   ): void {
-    this.rag.prompt(question, { ...opts, sessionId, resetSession: isFirstTurn }).subscribe({
+    this.answer = this.rag.prompt(question, { ...opts, sessionId, resetSession: isFirstTurn }).subscribe({
       next: response => {
         this.applyResponse(assistantMsg, response);
         this.finishMessage(assistantMsg);
