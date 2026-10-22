@@ -20,8 +20,7 @@ import {
   SourceModifier,
   sourceClass,
   sourceIcon,
-  sourceModifier,
-  sourceTypeLabel
+  sourceModifier
 } from '../utils/source-presentation';
 
 let _nextId = 0;
@@ -291,7 +290,7 @@ export class DeleteSessionDialogComponent {}
                               class="source-badge"
                               [ngClass]="sourceBadgeClass(src.sourceType)">
                           <mat-icon>{{ sourceIcon(src.sourceType) }}</mat-icon>
-                          {{ sourceLabel(src.sourceType) }}
+                          {{ sourceLabel(src.sourceType, src.sourceId) }}
                         </span>
                       </div>
 
@@ -1099,8 +1098,6 @@ export class ChatComponent implements OnInit, AfterViewChecked {
   }
 
   get anyLoggedIn(): boolean     { return this.auth.isAnyLoggedIn(); }
-  get alfrescoLoggedIn(): boolean { return this.auth.isAlfrescoLoggedIn(); }
-  get nuxeoLoggedIn(): boolean   { return this.auth.isNuxeoLoggedIn(); }
 
   ask(): void {
     const q = this.currentQuestion.trim();
@@ -1227,10 +1224,9 @@ export class ChatComponent implements OnInit, AfterViewChecked {
 
   trackSession(_i: number, s: ChatSessionSummary): string { return s.sessionId; }
 
-  /** Alfresco and Nuxeo need a session in that repository; any other source is offered outright. */
+  /** A source with a login needs a session in that very source; any other is offered outright. */
   isSelectable(option: ContentSourceOption): boolean {
-    if (!option.loginGated) return true;
-    return option.sourceType === 'alfresco' ? this.alfrescoLoggedIn : this.nuxeoLoggedIn;
+    return this.sources.isSelectable(option);
   }
 
   sourceTooltip(option: ContentSourceOption): string {
@@ -1265,7 +1261,10 @@ export class ChatComponent implements OnInit, AfterViewChecked {
 
   sourceIcon(source: ContentSourceType | undefined): string { return sourceIcon(source); }
 
-  sourceLabel(source: ContentSourceType | undefined): string { return sourceTypeLabel(source); }
+  /** The type, or the qualified source id when the type has more than one source. */
+  sourceLabel(source: ContentSourceType | undefined, sourceId?: string): string {
+    return this.auth.resultSourceLabel(source, sourceId);
+  }
 
   sourceBadgeClass(source: ContentSourceType | undefined): string {
     return sourceClass('source-badge', source);

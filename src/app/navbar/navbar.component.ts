@@ -1,8 +1,9 @@
 import { Component } from '@angular/core';
 import { Router } from '@angular/router';
 import { Observable } from 'rxjs';
-import { AuthService, AlfrescoSession, NuxeoSession } from '../services/auth.service';
+import { AuthService, SourceSessionView } from '../services/auth.service';
 import { ConnectorService } from '../services/connector.service';
+import { SourceModifier, sourceIcon, sourceModifier } from '../utils/source-presentation';
 
 // Satori App Chrome integration point:
 // When Satori's Application Shell header component is available, replace this
@@ -52,44 +53,25 @@ import { ConnectorService } from '../services/connector.service';
 
         <div class="header-sessions" role="status" aria-label="Repository sessions">
 
-          <div class="session-pill session-pill-alfresco"
-               [class.connected]="(alfresco$ | async) !== null">
-            <mat-icon class="session-icon">storage</mat-icon>
+          <div *ngFor="let view of views$ | async; trackBy: trackSource"
+               class="session-pill"
+               [ngClass]="'session-pill-' + modifierFor(view.source.sourceType)"
+               [class.connected]="view.session !== null">
+            <mat-icon class="session-icon">{{ iconFor(view.source.sourceType) }}</mat-icon>
             <span class="session-label">
-              <span class="session-source">Alfresco</span>
-              <ng-container *ngIf="alfresco$ | async as alf; else alfOff">
-                <strong class="session-user">{{ alf.username }}</strong>
+              <span class="session-source">{{ view.label }}</span>
+              <ng-container *ngIf="view.session as session; else off">
+                <strong class="session-user">{{ session.username }}</strong>
               </ng-container>
-              <ng-template #alfOff>
+              <ng-template #off>
                 <span class="session-offline">offline</span>
               </ng-template>
             </span>
-            <button *ngIf="(alfresco$ | async) !== null"
+            <button *ngIf="view.session !== null"
                     mat-icon-button type="button"
                     class="session-logout"
-                    matTooltip="Disconnect Alfresco"
-                    (click)="logoutAlfresco($event)">
-              <mat-icon>logout</mat-icon>
-            </button>
-          </div>
-
-          <div class="session-pill session-pill-nuxeo"
-               [class.connected]="(nuxeo$ | async) !== null">
-            <mat-icon class="session-icon">folder_open</mat-icon>
-            <span class="session-label">
-              <span class="session-source">Nuxeo</span>
-              <ng-container *ngIf="nuxeo$ | async as nux; else nuxOff">
-                <strong class="session-user">{{ nux.username }}</strong>
-              </ng-container>
-              <ng-template #nuxOff>
-                <span class="session-offline">offline</span>
-              </ng-template>
-            </span>
-            <button *ngIf="(nuxeo$ | async) !== null"
-                    mat-icon-button type="button"
-                    class="session-logout"
-                    matTooltip="Disconnect Nuxeo"
-                    (click)="logoutNuxeo($event)">
+                    [matTooltip]="'Disconnect ' + view.label"
+                    (click)="logout(view.source.sourceId, $event)">
               <mat-icon>logout</mat-icon>
             </button>
           </div>
@@ -373,12 +355,11 @@ import { ConnectorService } from '../services/connector.service';
   `]
 })
 export class NavbarComponent {
-  alfresco$: Observable<AlfrescoSession | null>;
-  nuxeo$: Observable<NuxeoSession | null>;
+  /** One pill per source with a login, in the order rag-service lists them. */
+  views$: Observable<SourceSessionView[]>;
 
   constructor(public router: Router, private auth: AuthService, private connectors: ConnectorService) {
-    this.alfresco$ = auth.alfrescoSession$;
-    this.nuxeo$ = auth.nuxeoSession$;
+    this.views$ = auth.sessionViews$;
   }
 
   /**
@@ -392,13 +373,14 @@ export class NavbarComponent {
     return this.connectors.configured;
   }
 
-  logoutAlfresco(event: Event): void {
-    event.stopPropagation();
-    this.auth.logoutAlfresco();
-  }
+  iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
 
-  logoutNuxeo(event: Event): void {
+  modifierFor(sourceType?: string): SourceModifier { return sourceModifier(sourceType); }
+
+  trackSource(_i: number, view: SourceSessionView): string { return view.source.sourceId; }
+
+  logout(sourceId: string, event: Event): void {
     event.stopPropagation();
-    this.auth.logoutNuxeo();
+    this.auth.logout(sourceId);
   }
 }

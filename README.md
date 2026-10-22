@@ -47,21 +47,28 @@ Part of the **AI Ready Content Hub** ecosystem -- a PoC for ingesting Alfresco a
 
 ## Authentication and sessions
 
-The two repositories are authenticated independently, and the two sessions are deliberately not
-handled the same way.
+The UI keeps one session per content source, keyed by the source id. The list of sources comes from
+`GET /api/rag/sources`, and the Connections screen shows one card per source that has a login. When
+that call fails, or the backend does not have it, the UI falls back to one Alfresco and one Nuxeo.
 
-| Source | Held as | Survives a page reload | Why |
+The first Alfresco and the first Nuxeo are reached directly through `ALFRESCO_URL` and `NUXEO_URL`:
+Alfresco signs in with a ticket and Nuxeo with `/api/v1/me`. Any other source signs in with a password
+that the RAG service checks.
+
+| Session | Held as | Survives a page reload | Why |
 |---|---|---|---|
-| Alfresco | `{username, ticket}` in `sessionStorage` | Yes | An Alfresco ticket is revocable and scoped, so persisting it is an acceptable demo trade |
-| Nuxeo | `{username, credentials}` in memory only | No | `credentials` is `base64(user:pass)`, a reusable secret that nothing can revoke short of a password change, so it never reaches web storage |
+| Alfresco ticket | `{sourceId, username, credential}` in `sessionStorage` under `sourceSessions` | Yes | An Alfresco ticket is revocable and scoped, so persisting it is an acceptable demo trade |
+| Password | `{sourceId, username, credential}` in memory only | No | `credential` is `base64(user:pass)`, a reusable secret that nothing can revoke short of a password change, so it never reaches web storage |
 
-Reloading the page therefore keeps you connected to Alfresco but ends the Nuxeo session, and you
-connect to Nuxeo again. That is the intended behaviour.
+Reloading the page therefore keeps an Alfresco ticket but ends every password session. That is the
+intended behaviour.
 
-The Nuxeo credential cannot be replaced with a token here: the RAG service's dual-source path
-requires `Authorization: Basic base64(TICKET_xxx:)` together with
-`X-Nuxeo-Authorization: Basic base64(user:pass)` on the same request, and querying both repositories
-at once is the point of this UI. A Nuxeo token is accepted only on the single-source path.
+How the sessions go to the RAG service depends on the source list:
+
+- At most one Alfresco and one Nuxeo: `Authorization: Basic base64(TICKET_xxx:)` and
+  `X-Nuxeo-Authorization: Basic base64(user:pass)`, or `Authorization` alone with one session.
+- Any other list: one `X-Source-Authorization` value per session, `<sourceId> Ticket <ticket>` or
+  `<sourceId> Basic <base64(user:pass)>`. The browser joins the values into one comma-separated header.
 
 ## Quick Start
 

@@ -289,6 +289,8 @@ export interface RagResult {
   snippet: string;
   source?: ContentSourceType;
   sourceId?: string;
+  /** The document's id within its source. With `sourceId` it identifies the document. */
+  nodeId?: string;
   path?: string;
   openInSourceUrl?: string;
   /** Kept for ResultsComponent backward compat */
@@ -450,17 +452,7 @@ export class RagService {
   }
 
   private streamAuthHeaders(): Record<string, string> {
-    const alf = this.auth.getAlfrescoSession();
-    const nux = this.auth.getNuxeoSession();
-    if (alf && nux) {
-      return {
-        Authorization: `Basic ${btoa(alf.ticket + ':')}`,
-        'X-Nuxeo-Authorization': `Basic ${nux.credentials}`
-      };
-    }
-    if (alf) return { Authorization: `Basic ${btoa(alf.ticket + ':')}` };
-    if (nux) return { Authorization: `Basic ${nux.credentials}` };
-    return {};
+    return this.auth.credentialHeaders();
   }
 
   private consumeSse(
@@ -571,6 +563,7 @@ export class RagService {
         snippet: item.chunkText ?? '',
         source: resolveSourceType(item.sourceDocument),
         sourceId: item.sourceDocument?.sourceId,
+        nodeId: item.sourceDocument?.nodeId,
         path: item.sourceDocument?.path,
         openInSourceUrl: item.sourceDocument?.openInSourceUrl,
         url: item.sourceDocument?.openInSourceUrl,

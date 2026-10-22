@@ -1,6 +1,7 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { AuthService } from '../services/auth.service';
 import { RagResult } from '../services/rag.service';
-import { sourceClass, sourceIcon, sourceTypeLabel } from '../utils/source-presentation';
+import { sourceClass, sourceIcon } from '../utils/source-presentation';
 
 @Component({
   selector: 'app-results',
@@ -19,8 +20,9 @@ import { sourceClass, sourceIcon, sourceTypeLabel } from '../utils/source-presen
             <div class="result-topline">
               <span class="source-badge" [ngClass]="badgeClass(r.source)">
                 <mat-icon>{{ sourceIcon(r.source) }}</mat-icon>
-                {{ sourceLabel(r.source) }}
-                <span *ngIf="r.sourceId" class="source-id">· {{ r.sourceId }}</span>
+                {{ sourceLabel(r) }}
+                <!-- A type with several sources already names the source in the label. -->
+                <span *ngIf="r.sourceId && !severalSources(r)" class="source-id">· {{ r.sourceId }}</span>
               </span>
 
               <span class="rank-pill">#{{ r.rank }}</span>
@@ -306,6 +308,8 @@ export class ResultsComponent {
   @Input() results: RagResult[] = [];
   @Output() select = new EventEmitter<RagResult>();
 
+  constructor(private auth: AuthService) {}
+
   truncatePath(path: string): string {
     if (!path || path.length <= 56) return path;
     const parts = path.split('/').filter(Boolean);
@@ -315,7 +319,10 @@ export class ResultsComponent {
 
   sourceIcon(source: string | undefined): string { return sourceIcon(source); }
 
-  sourceLabel(source: string | undefined): string { return sourceTypeLabel(source); }
+  /** The type, or the qualified source id when the type has more than one source. */
+  sourceLabel(r: RagResult): string { return this.auth.resultSourceLabel(r.source, r.sourceId); }
+
+  severalSources(r: RagResult): boolean { return this.auth.hasSeveralSources(r.source); }
 
   badgeClass(source: string | undefined): string { return sourceClass('source-badge', source); }
 

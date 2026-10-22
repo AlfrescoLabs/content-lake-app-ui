@@ -2,12 +2,27 @@ import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 
-import { AuthService } from './auth.service';
+import { AuthService, ContentSourceDescriptor, SourceSession } from './auth.service';
 
+const SOURCES_URL = '/api/rag/sources';
+const STATUS_URL = '/api/status';
 const ALFRESCO_ME_URL = '/alfresco/api/-default-/public/alfresco/versions/1/people/-me-';
 const NUXEO_ME_URL = '/nuxeo/api/v1/me';
 
-/** Lets the constructor's deferred validateSessions() run before assertions. */
+const ALF_A: ContentSourceDescriptor = {
+  sourceId: 'alfresco:aaa', sourceType: 'alfresco', displayName: 'Alfresco Main', loginKinds: ['ticket', 'password']
+};
+const ALF_B: ContentSourceDescriptor = {
+  sourceId: 'alfresco:bbb', sourceType: 'alfresco', displayName: 'Alfresco Archive', loginKinds: ['password']
+};
+const NUX: ContentSourceDescriptor = {
+  sourceId: 'nuxeo:prod', sourceType: 'nuxeo', displayName: 'Nuxeo', loginKinds: ['password']
+};
+const FILES: ContentSourceDescriptor = {
+  sourceId: 'filesystem:local', sourceType: 'filesystem', displayName: 'Files', loginKinds: []
+};
+
+/** Lets the constructor's deferred calls run before assertions. */
 function settle(): Promise<void> {
   return new Promise<void>(resolve => setTimeout(resolve, 0));
 }
@@ -28,77 +43,224 @@ describe('AuthService', () => {
     sessionStorage.clear();
   });
 
-  it('keepsTheNuxeoCredentialInMemoryAndOutOfSessionStorage', async () => {
+  /** Builds the service and answers its source-list request. */
+  async function serviceWith(sources: ContentSourceDescriptor[] | 'missing'): Promise<AuthService> {
     const service = TestBed.inject(AuthService);
     await settle();
+    const request = httpMock.expectOne(SOURCES_URL);
+    if (sources === 'missing') {
+      request.flush('not found', { status: 404, statusText: 'Not Found' });
+    } else {
+      request.flush(sources);
+    }
+    await settle();
+    return service;
+  }
 
-    const login = service.loginNuxeo('jdoe', 'secret');
-    const request = httpMock.expectOne(NUXEO_ME_URL);
-    expect(request.request.headers.get('Authorization')).toBe(`Basic ${btoa('jdoe:secret')}`);
-    request.flush({ id: 'jdoe' });
+  async function loginAlfrescoTicket(service: AuthService, sourceId: string, ticket: string): Promise<void> {
+    const login = service.login(sourceId, 'admin', 'admin');
+    httpMock.expectOne(r => r.url.endsWith('/tickets')).flush({ entry: { id: ticket } });
     await login;
+  }
 
-    // The credential has to stay reachable: rag-service's dual-source path needs it on every request.
-    expect(service.getNuxeoSession()).toEqual({ username: 'jdoe', credentials: btoa('jdoe:secret') });
-    expect(service.isNuxeoLoggedIn()).toBeTrue();
+  describe('source list', () => {
 
-    // ...but it must never reach web storage, where any script on the origin could read it back.
-    expect(sessionStorage.getItem('nuxeoSession')).toBeNull();
-    expect(sessionStorage.length).toBe(0);
+    it('fallsBackToOneAlfrescoAndOneNuxeoWhenTheBackendHasNoSourceList', async () => {
+      const service = await serviceWith('missing');
+
+      expect(service.getLoginSources().map(s => s.sourceType)).toEqual(['alfresco', 'nuxeo']);
+      expect(service.sessionViews().map(v => v.label)).toEqual(['Alfresco', 'Nuxeo']);
+      expect(service.isLegacyTopology()).toBeTrue();
+    });
+
+    it('fallsBackWhenTheCallFailsOrTheBodyIsNotAList', async () => {
+      const service = TestBed.inject(AuthService);
+      await settle();
+      httpMock.expectOne(SOURCES_URL).error(new ProgressEvent('network error'));
+      await settle();
+      expect(service.getSources().map(s => s.sourceId)).toEqual(['alfresco', 'nuxeo']);
+
+      const reload = service.loadSources();
+      httpMock.expectOne(SOURCES_URL).flush({ unexpected: true });
+      await reload;
+      expect(service.getSources().map(s => s.sourceId)).toEqual(['alfresco', 'nuxeo']);
+    });
+
+    it('rendersOneLoginEntryPerSourceWithALoginAndNamesSameTypeSourcesApart', async () => {
+      const service = await serviceWith([ALF_A, ALF_B, NUX, FILES]);
+
+      // The filesystem source has no login, so it gets no card.
+      expect(service.getLoginSources().map(s => s.sourceId)).toEqual(['alfresco:aaa', 'alfresco:bbb', 'nuxeo:prod']);
+      // Two Alfresco sources need their display names; the one Nuxeo keeps the type label.
+      expect(service.sessionViews().map(v => v.label)).toEqual(['Alfresco Main', 'Alfresco Archive', 'Nuxeo']);
+      expect(service.isLegacyTopology()).toBeFalse();
+      expect(service.hasSeveralSources('alfresco')).toBeTrue();
+      expect(service.hasSeveralSources('nuxeo')).toBeFalse();
+    });
+
+    it('keepsTheTypeLabelForOneAlfrescoAndOneNuxeo', async () => {
+      const service = await serviceWith([ALF_A, NUX]);
+
+      expect(service.sessionViews().map(v => v.label)).toEqual(['Alfresco', 'Nuxeo']);
+      expect(service.isLegacyTopology()).toBeTrue();
+      expect(service.resultSourceLabel('alfresco', 'alfresco:aaa')).toBe('Alfresco');
+    });
+
+    it('labelsAResultByItsSourceIdOnlyWhenTheTypeHasSeveral', async () => {
+      const service = await serviceWith([ALF_A, ALF_B, NUX]);
+
+      expect(service.resultSourceLabel('alfresco', 'alfresco:bbb')).toBe('Alfresco (bbb)');
+      expect(service.resultSourceLabel('nuxeo', 'nuxeo:prod')).toBe('Nuxeo');
+    });
   });
 
-  it('dropsAStaleNuxeoSessionKeyLeftByAnEarlierBuild', async () => {
-    sessionStorage.setItem(
-      'nuxeoSession',
-      JSON.stringify({ username: 'jdoe', credentials: btoa('jdoe:secret') })
-    );
+  describe('sessions', () => {
 
-    const service = TestBed.inject(AuthService);
+    it('keepsThePrimaryNuxeoCredentialInMemoryAndOutOfSessionStorage', async () => {
+      const service = await serviceWith([ALF_A, NUX]);
 
-    expect(sessionStorage.getItem('nuxeoSession')).toBeNull();
-    expect(service.getNuxeoSession()).toBeNull();
-    expect(service.isNuxeoLoggedIn()).toBeFalse();
+      const login = service.login('nuxeo:prod', 'jdoe', 'secret');
+      const request = httpMock.expectOne(NUXEO_ME_URL);
+      expect(request.request.headers.get('Authorization')).toBe(`Basic ${btoa('jdoe:secret')}`);
+      request.flush({ id: 'jdoe' });
+      await login;
 
-    await settle();
-    httpMock.verify();
+      expect(service.getSession('nuxeo:prod')).toEqual({
+        sourceId: 'nuxeo:prod', sourceType: 'nuxeo', displayName: 'Nuxeo',
+        username: 'jdoe', credential: btoa('jdoe:secret'), kind: 'password'
+      });
+      // ...but it must never reach web storage, where any script on the origin could read it back.
+      expect(sessionStorage.length).toBe(0);
+    });
+
+    it('storesTicketSessionsUnderOneKeyAndRehydratesThem', async () => {
+      let service = await serviceWith([ALF_A, NUX]);
+      await loginAlfrescoTicket(service, 'alfresco:aaa', 'TICKET_A');
+
+      const stored = JSON.parse(sessionStorage.getItem(AuthService.SESSIONS_KEY)!);
+      expect(stored.map((s: SourceSession) => s.sourceId)).toEqual(['alfresco:aaa']);
+
+      // A fresh instance, as after a reload.
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+      httpMock = TestBed.inject(HttpTestingController);
+      service = TestBed.inject(AuthService);
+      expect(service.getSession('alfresco:aaa')?.credential).toBe('TICKET_A');
+
+      await settle();
+      httpMock.expectOne(SOURCES_URL).flush([ALF_A, NUX]);
+      await settle();
+      const validation = httpMock.expectOne(ALFRESCO_ME_URL);
+      expect(validation.request.headers.get('Authorization')).toBe(`Basic ${btoa('TICKET_A:')}`);
+      validation.flush({ entry: { id: 'admin' } });
+      await service.ready;
+
+      expect(service.isLoggedIn('alfresco:aaa')).toBeTrue();
+    });
+
+    it('dropsTheKeysEarlierBuildsWroteOnePerType', async () => {
+      sessionStorage.setItem('alfrescoSession', JSON.stringify({ username: 'admin', ticket: 'TICKET_OLD' }));
+      sessionStorage.setItem('nuxeoSession', JSON.stringify({ username: 'jdoe', credentials: btoa('jdoe:pw') }));
+
+      const service = await serviceWith([ALF_A, NUX]);
+
+      expect(sessionStorage.getItem('alfrescoSession')).toBeNull();
+      expect(sessionStorage.getItem('nuxeoSession')).toBeNull();
+      expect(service.isAnyLoggedIn()).toBeFalse();
+      httpMock.verify();
+    });
+
+    it('movesARestoredTicketToTheOneAlfrescoWhenTheListChangedIds', async () => {
+      // Written while the list was the fallback, read back once the real ids are known.
+      sessionStorage.setItem(AuthService.SESSIONS_KEY, JSON.stringify([{
+        sourceId: 'alfresco', sourceType: 'alfresco', displayName: 'Alfresco',
+        username: 'admin', credential: 'TICKET_X', kind: 'ticket'
+      }]));
+
+      const service = await serviceWith([ALF_A, NUX]);
+      httpMock.expectOne(ALFRESCO_ME_URL).flush({});
+      await service.ready;
+
+      expect(service.getSession('alfresco')).toBeNull();
+      expect(service.getSession('alfresco:aaa')?.credential).toBe('TICKET_X');
+    });
+
+    it('signsInToASecondAlfrescoWithAPasswordThatRagServiceChecks', async () => {
+      const service = await serviceWith([ALF_A, ALF_B, NUX]);
+
+      const login = service.login('alfresco:bbb', 'jdoe', 'pw');
+      const probe = httpMock.expectOne(STATUS_URL);
+      // Only this source's credential goes on the probe, so a 401 is about this credential alone.
+      expect(probe.request.headers.get('X-Source-Authorization'))
+        .toBe(`alfresco:bbb Basic ${btoa('jdoe:pw')}`);
+      expect(probe.request.headers.has('Authorization')).toBeFalse();
+      probe.flush({});
+      await login;
+
+      expect(service.getSession('alfresco:bbb')?.kind).toBe('password');
+      expect(service.isLoggedIn('alfresco:aaa')).toBeFalse();
+      expect(sessionStorage.length).toBe(0);
+    });
+
+    it('rejectsASecondAlfrescoLoginThatRagServiceAnswers401', async () => {
+      const service = await serviceWith([ALF_A, ALF_B, NUX]);
+
+      const login = service.login('alfresco:bbb', 'jdoe', 'wrong');
+      httpMock.expectOne(STATUS_URL).flush('denied', { status: 401, statusText: 'Unauthorized' });
+
+      await expectAsync(login).toBeRejected();
+      expect(service.isLoggedIn('alfresco:bbb')).toBeFalse();
+    });
+
+    it('signsInAndOutOfTwoAlfrescoSourcesIndependently', async () => {
+      const service = await serviceWith([ALF_A, ALF_B, NUX]);
+      await loginAlfrescoTicket(service, 'alfresco:aaa', 'TICKET_A');
+      const second = service.login('alfresco:bbb', 'jdoe', 'pw');
+      httpMock.expectOne(STATUS_URL).flush({});
+      await second;
+
+      service.logout('alfresco:aaa');
+
+      expect(service.isLoggedIn('alfresco:aaa')).toBeFalse();
+      expect(service.isLoggedIn('alfresco:bbb')).toBeTrue();
+      expect(sessionStorage.getItem(AuthService.SESSIONS_KEY)).toBeNull();
+    });
   });
 
-  it('stillRehydratesTheAlfrescoTicketFromSessionStorage', async () => {
-    sessionStorage.setItem(
-      'alfrescoSession',
-      JSON.stringify({ username: 'admin', ticket: 'TICKET_STORED' })
-    );
+  describe('credential headers', () => {
 
-    const service = TestBed.inject(AuthService);
+    it('sendsTodaysHeadersForOneAlfrescoAndOneNuxeo', async () => {
+      const service = await serviceWith([ALF_A, NUX]);
+      await loginAlfrescoTicket(service, 'alfresco:aaa', 'TICKET_A');
+      expect(service.credentialHeaders()).toEqual({ Authorization: `Basic ${btoa('TICKET_A:')}` });
 
-    expect(service.getAlfrescoSession()).toEqual({ username: 'admin', ticket: 'TICKET_STORED' });
-    expect(service.isAlfrescoLoggedIn()).toBeTrue();
+      const login = service.login('nuxeo:prod', 'jdoe', 'pw');
+      httpMock.expectOne(NUXEO_ME_URL).flush({ id: 'jdoe' });
+      await login;
+      expect(service.credentialHeaders()).toEqual({
+        Authorization: `Basic ${btoa('TICKET_A:')}`,
+        'X-Nuxeo-Authorization': `Basic ${btoa('jdoe:pw')}`
+      });
 
-    await settle();
-    const validation = httpMock.expectOne(ALFRESCO_ME_URL);
-    expect(validation.request.headers.get('Authorization')).toBe(`Basic ${btoa('TICKET_STORED:')}`);
-    validation.flush({ entry: { id: 'admin' } });
+      service.logout('alfresco:aaa');
+      expect(service.credentialHeaders()).toEqual({ Authorization: `Basic ${btoa('jdoe:pw')}` });
+    });
 
-    expect(service.isAlfrescoLoggedIn()).toBeTrue();
-    expect(sessionStorage.getItem('alfrescoSession')).not.toBeNull();
-  });
+    it('sendsOneSourceAuthorizationValuePerSessionWithTwoAlfrescoSources', async () => {
+      const service = await serviceWith([ALF_A, ALF_B, NUX]);
+      await loginAlfrescoTicket(service, 'alfresco:aaa', 'TICKET_A');
+      const second = service.login('alfresco:bbb', 'jdoe', 'pw');
+      httpMock.expectOne(STATUS_URL).flush({});
+      await second;
 
-  it('logsOutNuxeoWithoutTouchingTheAlfrescoSession', async () => {
-    const service = TestBed.inject(AuthService);
-    await settle();
+      expect(service.credentialHeaders()).toEqual({
+        'X-Source-Authorization': `alfresco:aaa Ticket TICKET_A, alfresco:bbb Basic ${btoa('jdoe:pw')}`
+      });
+    });
 
-    const login = service.loginNuxeo('jdoe', 'secret');
-    httpMock.expectOne(NUXEO_ME_URL).flush({ id: 'jdoe' });
-    await login;
-
-    const alfrescoLogin = service.loginAlfresco('admin', 'admin');
-    httpMock.expectOne(r => r.url.endsWith('/tickets')).flush({ entry: { id: 'TICKET_NEW' } });
-    await alfrescoLogin;
-
-    service.logoutNuxeo();
-
-    expect(service.getNuxeoSession()).toBeNull();
-    expect(service.getAlfrescoSession()?.ticket).toBe('TICKET_NEW');
-    expect(sessionStorage.getItem('alfrescoSession')).not.toBeNull();
+    it('sendsNothingWithNoSession', async () => {
+      const service = await serviceWith([ALF_A, ALF_B]);
+      expect(service.credentialHeaders()).toEqual({});
+    });
   });
 });

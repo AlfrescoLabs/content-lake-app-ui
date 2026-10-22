@@ -1,18 +1,40 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { BehaviorSubject, Observable, forkJoin, of } from 'rxjs';
-import { map, catchError, tap } from 'rxjs/operators';
+import { BehaviorSubject, Observable, combineLatest, firstValueFrom, of } from 'rxjs';
+import { catchError, map } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
-import { resolveConnectorUrls } from '../utils/api-paths';
+import { resolveConnectorUrls, resolveStatusUrl } from '../utils/api-paths';
+import { sourceKeyLabel, sourceTypeLabel } from '../utils/source-presentation';
 
-export interface AlfrescoSession {
-  username: string;
-  ticket: string;   // TICKET_xxx string
+/** How a session proves itself to rag-service: an Alfresco ticket, or a base64(user:pass). */
+export type SourceLoginKind = 'password' | 'ticket';
+
+/** One entry of `GET /api/rag/sources`. It carries no URL and no secret. */
+export interface ContentSourceDescriptor {
+  /** Qualified id, `<sourceType>:<id>`, the same value documents carry as `cin_sourceId`. */
+  sourceId: string;
+  sourceType: string;
+  displayName: string;
+  /** Empty for a source that has no login of its own. */
+  loginKinds: SourceLoginKind[];
 }
 
-export interface NuxeoSession {
+/** A signed-in session in one source. */
+export interface SourceSession {
+  sourceId: string;
+  sourceType: string;
+  displayName: string;
   username: string;
-  credentials: string;  // base64(user:pass), sent as X-Nuxeo-Authorization: Basic <credentials>
+  /** The Alfresco ticket for kind `ticket`, base64(user:pass) for kind `password`. */
+  credential: string;
+  kind: SourceLoginKind;
+}
+
+/** A login-capable source with the session held for it, if any. For rendering. */
+export interface SourceSessionView {
+  source: ContentSourceDescriptor;
+  label: string;
+  session: SourceSession | null;
 }
 
 /**
@@ -27,116 +49,296 @@ export interface IngesterSession {
   credentials: string;  // base64(user:pass), sent as Authorization: Basic <credentials>
 }
 
+/** Header that carries one credential per signed-in source, as `<sourceId> <Basic|Ticket> <value>`. */
+export const SOURCE_AUTHORIZATION_HEADER = 'X-Source-Authorization';
+
 /**
- * Holds the two repository sessions this demo UI can establish.
+ * Holds one session per content source, keyed by the source's qualified id.
  *
- * The two sources are treated asymmetrically on purpose. An Alfresco ticket is revocable and
- * scoped, so it survives a reload in `sessionStorage`. A Nuxeo session is a reusable
- * base64(user:pass) credential that rag-service requires on the wire for dual-source queries, and
- * nothing can revoke it short of changing the password, so it is held in memory only and a reload
- * ends it.
+ * The source list comes from `GET /api/rag/sources`. When that call fails, or a backend without it answers
+ * 404, the list falls back to one Alfresco and one Nuxeo at `environment.alfrescoUrl` and
+ * `environment.nuxeoUrl`, which is the shape this UI has always had.
+ *
+ * The first Alfresco and the first Nuxeo in the list are the *primary* ones: the UI can reach them
+ * directly, so it signs in to them the way it always has (an Alfresco ticket, a Nuxeo `/api/v1/me` check).
+ * Every other source has no URL the UI knows, so it signs in with a password that rag-service checks.
+ *
+ * Sessions are treated asymmetrically on purpose. An Alfresco ticket is revocable and scoped, so it survives
+ * a reload in `sessionStorage`. A password session is a reusable base64(user:pass) that nothing can revoke
+ * short of changing the password, so it is held in memory only and a reload ends it.
  */
 @Injectable({ providedIn: 'root' })
 export class AuthService {
 
-  private static readonly NUXEO_SESSION_KEY = 'nuxeoSession';
+  /** The one web-storage key. It holds ticket sessions only. */
+  static readonly SESSIONS_KEY = 'sourceSessions';
 
-  private alfresco$ = new BehaviorSubject<AlfrescoSession | null>(null);
-  private nuxeo$ = new BehaviorSubject<NuxeoSession | null>(null);
+  /** Keys written by earlier builds, one per source type. Dropped on start. */
+  private static readonly LEGACY_KEYS = ['alfrescoSession', 'nuxeoSession'];
+
+  /** Used when `/api/rag/sources` is not there. Their ids are bare types, as no real id is known. */
+  static readonly FALLBACK_SOURCES: readonly ContentSourceDescriptor[] = [
+    { sourceId: 'alfresco', sourceType: 'alfresco', displayName: 'Alfresco', loginKinds: ['ticket', 'password'] },
+    { sourceId: 'nuxeo', sourceType: 'nuxeo', displayName: 'Nuxeo', loginKinds: ['password'] }
+  ];
+
+  private sources$$ = new BehaviorSubject<ContentSourceDescriptor[]>([...AuthService.FALLBACK_SOURCES]);
+  private sessions$$ = new BehaviorSubject<Map<string, SourceSession>>(new Map());
 
   /**
-   * In memory only, for the same reason as the Nuxeo session: it is a reusable base64(user:pass) that
+   * In memory only, for the same reason as a password session: it is a reusable base64(user:pass) that
    * nothing can revoke short of changing the password, so persisting it would outlive the tab that earned
    * it. A reload ends it and the Sources screen prompts again, which is the correct trade for a credential
    * that authorises a write.
    */
   private ingester$ = new BehaviorSubject<IngesterSession | null>(null);
 
-  readonly alfrescoSession$ = this.alfresco$.asObservable();
-  readonly nuxeoSession$ = this.nuxeo$.asObservable();
+  readonly sources$ = this.sources$$.asObservable();
+  readonly sessions$: Observable<SourceSession[]> = this.sessions$$.pipe(map(m => [...m.values()]));
   readonly ingesterSession$ = this.ingester$.asObservable();
 
+  /** Every login-capable source with its session, in source-list order. */
+  readonly sessionViews$: Observable<SourceSessionView[]> =
+    combineLatest([this.sources$$, this.sessions$$]).pipe(map(() => this.sessionViews()));
+
+  /** Settles once the source list is loaded and restored sessions are checked. */
+  readonly ready: Promise<void>;
+
   constructor(private http: HttpClient) {
-    const alf = sessionStorage.getItem('alfrescoSession');
-    if (alf) this.alfresco$.next(JSON.parse(alf));
+    for (const key of AuthService.LEGACY_KEYS) sessionStorage.removeItem(key);
+    this.restoreSessions();
 
-    // The Nuxeo session is deliberately not rehydrated, because it is never written. Clearing the
-    // key here drops one left behind by an older build of this UI that did persist it.
-    sessionStorage.removeItem(AuthService.NUXEO_SESSION_KEY);
-
-    // Deferred to a microtask on purpose: validation goes over HTTP, which builds the interceptor
-    // chain, and the auth interceptor needs this instance. Firing it from the constructor makes that
+    // Deferred to a microtask on purpose: these calls go over HTTP, which builds the interceptor chain,
+    // and the auth interceptor needs this instance. Firing them from the constructor makes that
     // resolution re-enter a half-built AuthService.
-    Promise.resolve().then(() => this.validateSessions());
+    this.ready = Promise.resolve()
+      .then(() => this.loadSources())
+      .then(() => this.validateSessions());
   }
 
-  // ---- Alfresco ----
+  // ---- Sources ----
+
+  getSources(): ContentSourceDescriptor[] {
+    return this.sources$$.getValue();
+  }
+
+  /** The sources a user can sign in to, which are the ones that get a login card. */
+  getLoginSources(): ContentSourceDescriptor[] {
+    return this.getSources().filter(s => s.loginKinds.length > 0);
+  }
+
+  findSource(sourceId: string): ContentSourceDescriptor | undefined {
+    return this.getSources().find(s => s.sourceId === sourceId);
+  }
+
+  /** Whether the list holds more than one source of this type, so that the type alone names none. */
+  hasSeveralSources(sourceType?: string): boolean {
+    const type = (sourceType ?? '').toLowerCase();
+    return this.getSources().filter(s => s.sourceType === type).length > 1;
+  }
+
+  /** Whether any source of this type needs a sign-in. */
+  isLoginSourceType(sourceType?: string): boolean {
+    const type = (sourceType ?? '').toLowerCase();
+    return this.getLoginSources().some(s => s.sourceType === type);
+  }
 
   /**
-   * Authenticates against Alfresco and stores the returned ticket.
-   * Uses the Alfresco REST API tickets endpoint.
+   * Display name for a source. A type with one source keeps the type label, so one Alfresco and one Nuxeo
+   * read exactly as they always have; with several, the display name tells them apart.
    */
-  loginAlfresco(username: string, password: string): Promise<void> {
-    const url = `${environment.alfrescoUrl}/alfresco/api/-default-/public/authentication/versions/1/tickets`;
-    return this.http
-      .post<{ entry: { id: string } }>(url, { userId: username, password })
-      .toPromise()
-      .then(resp => {
-        const ticket = resp?.entry?.id;
-        if (!ticket) throw new Error('No ticket in Alfresco response');
-        const session: AlfrescoSession = { username, ticket };
-        this.alfresco$.next(session);
-        sessionStorage.setItem('alfrescoSession', JSON.stringify(session));
-      });
+  sourceLabel(source: ContentSourceDescriptor): string {
+    if (!this.hasSeveralSources(source.sourceType)) return sourceTypeLabel(source.sourceType);
+    return source.displayName?.trim() || sourceKeyLabel(source.sourceId);
   }
 
-  logoutAlfresco(): void {
-    this.alfresco$.next(null);
-    sessionStorage.removeItem('alfrescoSession');
+  /** Label for a hit's source: the type, or the qualified id when the type alone is ambiguous. */
+  resultSourceLabel(sourceType?: string, sourceKey?: string): string {
+    if (sourceKey && this.hasSeveralSources(sourceType)) return sourceKeyLabel(sourceKey);
+    return sourceTypeLabel(sourceType);
   }
-
-  getAlfrescoSession(): AlfrescoSession | null {
-    return this.alfresco$.getValue();
-  }
-
-  /** @deprecated Use getAlfrescoSession().ticket, kept for backward compat with rag.service.ts */
-  getAlfrescoToken(): string | undefined {
-    return this.alfresco$.getValue()?.ticket;
-  }
-
-  // ---- Nuxeo ----
 
   /**
-   * Validates Nuxeo credentials by calling /api/v1/me with Basic auth.
+   * Whether this source is the first of its type and of a type the UI can reach directly. Only Alfresco
+   * and Nuxeo are, through `environment.alfrescoUrl` and `environment.nuxeoUrl`.
+   */
+  isPrimary(source: ContentSourceDescriptor): boolean {
+    if (source.sourceType !== 'alfresco' && source.sourceType !== 'nuxeo') return false;
+    return this.getSources().find(s => s.sourceType === source.sourceType)?.sourceId === source.sourceId;
+  }
+
+  /** The kind of session signing in to this source produces. */
+  loginKind(source: ContentSourceDescriptor): SourceLoginKind {
+    return source.sourceType === 'alfresco' && this.isPrimary(source) ? 'ticket' : 'password';
+  }
+
+  /**
+   * Whether the source list is the shape the current headers can express: at most one Alfresco, at most
+   * one Nuxeo, and no other source with a login. Then the UI keeps sending `Authorization` and
+   * `X-Nuxeo-Authorization`, so it works against a backend that does not read `X-Source-Authorization`.
+   */
+  isLegacyTopology(): boolean {
+    const login = this.getLoginSources();
+    const count = (type: string) => login.filter(s => s.sourceType === type).length;
+    return count('alfresco') <= 1 && count('nuxeo') <= 1
+      && login.every(s => s.sourceType === 'alfresco' || s.sourceType === 'nuxeo');
+  }
+
+  /**
+   * Reads `GET /api/rag/sources`. Any failure, a 404 from an older backend, or a body that is not a list of
+   * sources leaves the fallback list in place.
+   */
+  loadSources(): Promise<void> {
+    return firstValueFrom(
+      this.http.get<unknown>(`${environment.ragUrl}/sources`).pipe(
+        map(body => parseSources(body)),
+        catchError(() => of(null))
+      )
+    ).then(sources => {
+      this.sources$$.next(sources && sources.length > 0 ? sources : [...AuthService.FALLBACK_SOURCES]);
+      this.reconcileSessions();
+    });
+  }
+
+  // ---- Sessions ----
+
+  getSessions(): SourceSession[] {
+    return [...this.sessions$$.getValue().values()];
+  }
+
+  getSession(sourceId: string): SourceSession | null {
+    return this.sessions$$.getValue().get(sourceId) ?? null;
+  }
+
+  isLoggedIn(sourceId: string): boolean {
+    return this.sessions$$.getValue().has(sourceId);
+  }
+
+  isAnyLoggedIn(): boolean {
+    return this.sessions$$.getValue().size > 0;
+  }
+
+  hasSessionOfType(sourceType?: string): boolean {
+    const type = (sourceType ?? '').toLowerCase();
+    return this.getSessions().some(s => s.sourceType === type);
+  }
+
+  /**
+   * Whether a session covers this `cin_sourceId` value. A value the source list does not name (an older
+   * backend, where the list is the fallback) is covered by any session of its type, as before.
+   */
+  hasSessionForKey(sourceKey: string): boolean {
+    if (this.isLoggedIn(sourceKey)) return true;
+    if (this.findSource(sourceKey)) return false;
+    const idx = sourceKey.indexOf(':');
+    return this.hasSessionOfType(idx < 0 ? sourceKey : sourceKey.slice(0, idx));
+  }
+
+  /** Every login-capable source with its session, in source-list order. */
+  sessionViews(): SourceSessionView[] {
+    return this.getLoginSources().map(source => ({
+      source,
+      label: this.sourceLabel(source),
+      session: this.getSession(source.sourceId)
+    }));
+  }
+
+  /** Signs in to one source and keeps the session. Other sources' sessions are untouched. */
+  login(sourceId: string, username: string, password: string): Promise<void> {
+    return firstValueFrom(this.authenticate(sourceId, username, password)).then(session => {
+      this.putSession(session);
+    });
+  }
+
+  logout(sourceId: string): void {
+    const next = new Map(this.sessions$$.getValue());
+    if (!next.delete(sourceId)) return;
+    this.sessions$$.next(next);
+    this.persistSessions();
+  }
+
+  /**
+   * Checks a credential for one source and returns the session, without storing it. The permission
+   * comparison uses it directly.
    *
-   * The resulting base64(user:pass) is kept in memory for the lifetime of the page, because
-   * rag-service's dual-source path requires it on every request as X-Nuxeo-Authorization. It is
-   * never written to web storage, so a reload ends the Nuxeo half of the session.
+   * - Primary Alfresco: posts to the tickets endpoint and keeps the ticket.
+   * - Primary Nuxeo: calls `/api/v1/me` with Basic auth, which also resolves the user id.
+   * - Anything else: the UI has no URL for it, so rag-service checks the password. The probe is
+   *   `GET /api/status` carrying only this source's `X-Source-Authorization`; a 401 means wrong credentials.
    */
-  loginNuxeo(username: string, password: string): Promise<void> {
-    const credentials = btoa(`${username}:${password}`);
-    const headers = new HttpHeaders({ Authorization: `Basic ${credentials}` });
-    const url = `${environment.nuxeoUrl}/api/v1/me`;
-    return this.http
-      .get<{ id?: string; username?: string }>(url, { headers })
-      .toPromise()
-      .then(resp => {
-        const resolvedUsername = resp?.id ?? resp?.username ?? username;
-        this.nuxeo$.next({ username: resolvedUsername, credentials });
-      });
+  authenticate(sourceId: string, username: string, password: string): Observable<SourceSession> {
+    const source = this.findSource(sourceId);
+    if (!source) {
+      return new Observable(observer => observer.error(new Error(`Unknown source ${sourceId}`)));
+    }
+    const base = { sourceId, sourceType: source.sourceType, displayName: source.displayName };
+
+    if (this.loginKind(source) === 'ticket') {
+      const url = `${environment.alfrescoUrl}/alfresco/api/-default-/public/authentication/versions/1/tickets`;
+      return this.http
+        .post<{ entry: { id: string } }>(url, { userId: username, password })
+        .pipe(map(resp => {
+          const ticket = resp?.entry?.id;
+          if (!ticket) throw new Error('No ticket in Alfresco response');
+          return { ...base, username, credential: ticket, kind: 'ticket' as const };
+        }));
+    }
+
+    const credential = btoa(`${username}:${password}`);
+    if (source.sourceType === 'nuxeo' && this.isPrimary(source)) {
+      const headers = new HttpHeaders({ Authorization: `Basic ${credential}` });
+      return this.http
+        .get<{ id?: string; username?: string }>(`${environment.nuxeoUrl}/api/v1/me`, { headers })
+        .pipe(map(resp => ({
+          ...base,
+          username: resp?.id ?? resp?.username ?? username,
+          credential,
+          kind: 'password' as const
+        })));
+    }
+
+    const session: SourceSession = { ...base, username, credential, kind: 'password' };
+    return this.probe(session).pipe(map(() => session));
   }
 
-  logoutNuxeo(): void {
-    this.nuxeo$.next(null);
+  // ---- Credential headers ----
+
+  /** The credential headers for every held session, for rag-service and its status endpoint. */
+  credentialHeaders(): Record<string, string> {
+    return this.headersFor(this.getSessions());
   }
 
-  getNuxeoSession(): NuxeoSession | null {
-    return this.nuxeo$.getValue();
-  }
+  /**
+   * The credential headers for a set of sessions.
+   *
+   * In the legacy topology (see {@link isLegacyTopology}) these are today's headers:
+   * - Alfresco and Nuxeo: `Authorization` (Alfresco ticket) + `X-Nuxeo-Authorization` (Nuxeo Basic)
+   * - Alfresco only:      `Authorization: Basic base64(TICKET_...:)`
+   * - Nuxeo only:         `Authorization: Basic base64(user:pass)`
+   *
+   * Otherwise one `X-Source-Authorization` value per session, `<sourceId> Ticket <ticket>` or
+   * `<sourceId> Basic <base64(user:pass)>`. A browser joins repeated values of one header with a comma,
+   * so they are sent as one comma-separated header.
+   */
+  headersFor(sessions: readonly SourceSession[]): Record<string, string> {
+    if (sessions.length === 0) return {};
 
-  /** @deprecated Use getNuxeoSession().credentials, kept for backward compat with rag.service.ts */
-  getNuxeoToken(): string | undefined {
-    return this.nuxeo$.getValue()?.credentials;
+    if (this.isLegacyTopology()) {
+      const alf = sessions.find(s => s.sourceType === 'alfresco');
+      const nux = sessions.find(s => s.sourceType === 'nuxeo');
+      if (alf && nux) {
+        return { Authorization: basicFor(alf), 'X-Nuxeo-Authorization': `Basic ${nux.credential}` };
+      }
+      if (alf) return { Authorization: basicFor(alf) };
+      if (nux) return { Authorization: `Basic ${nux.credential}` };
+      return {};
+    }
+
+    return {
+      [SOURCE_AUTHORIZATION_HEADER]: sessions
+        .map(s => `${s.sourceId} ${s.kind === 'ticket' ? 'Ticket' : 'Basic'} ${s.credential}`)
+        .join(', ')
+    };
   }
 
   // ---- Ingester sync-admin (the connector endpoints) ----
@@ -175,125 +377,133 @@ export class AuthService {
     return this.ingester$.getValue() !== null;
   }
 
-  // ---- Temporary auth (comparison mode, does NOT store to session) ----
-
-  /**
-   * Authenticates against Alfresco and returns the ticket + resolved username
-   * without touching the stored session. Used by the permission comparison panel.
-   */
-  getTempAlfrescoSession(username: string, password: string): Observable<AlfrescoSession> {
-    const url = `${environment.alfrescoUrl}/alfresco/api/-default-/public/authentication/versions/1/tickets`;
-    return this.http
-      .post<{ entry: { id: string } }>(url, { userId: username, password })
-      .pipe(map(resp => {
-        const ticket = resp?.entry?.id;
-        if (!ticket) throw new Error('No ticket in Alfresco response');
-        return { username, ticket };
-      }));
-  }
-
-  /**
-   * Validates Nuxeo Basic credentials and returns the session without storing it.
-   */
-  getTempNuxeoSession(username: string, password: string): Observable<NuxeoSession> {
-    const credentials = btoa(`${username}:${password}`);
-    const headers = new HttpHeaders({ Authorization: `Basic ${credentials}` });
-    return this.http
-      .get<{ id?: string; username?: string }>(`${environment.nuxeoUrl}/api/v1/me`, { headers })
-      .pipe(map(resp => ({
-        username: resp?.id ?? resp?.username ?? username,
-        credentials
-      })));
-  }
-
-  // ---- Status ----
-
-  isAlfrescoLoggedIn(): boolean {
-    return this.alfresco$.getValue() !== null;
-  }
-
-  isNuxeoLoggedIn(): boolean {
-    return this.nuxeo$.getValue() !== null;
-  }
-
-  isAnyLoggedIn(): boolean {
-    return this.isAlfrescoLoggedIn() || this.isNuxeoLoggedIn();
-  }
-
   // ---- Session Validation ----
 
   /**
-   * Validates an Alfresco session by attempting to retrieve current user info.
-   * Returns true if the session is valid, false otherwise.
-   */
-  private validateAlfrescoSession(session: AlfrescoSession): Observable<boolean> {
-    const headers = new HttpHeaders({
-      Authorization: `Basic ${btoa(session.ticket + ':')}`
-    });
-    const url = `${environment.alfrescoUrl}/alfresco/api/-default-/public/alfresco/versions/1/people/-me-`;
-
-    return this.http.get(url, { headers }).pipe(
-      map(() => true),
-      catchError(() => of(false))
-    );
-  }
-
-  /**
-   * Validates a Nuxeo session by calling the /me endpoint.
-   * Returns true if the session is valid, false otherwise.
-   */
-  private validateNuxeoSession(session: NuxeoSession): Observable<boolean> {
-    const headers = new HttpHeaders({
-      Authorization: `Basic ${session.credentials}`
-    });
-    const url = `${environment.nuxeoUrl}/api/v1/me`;
-
-    return this.http.get(url, { headers }).pipe(
-      map(() => true),
-      catchError(() => of(false))
-    );
-  }
-
-  /**
-   * Validates all restored sessions on page load.
-   * Automatically logs out invalid sessions.
+   * Validates every held session. Called after the source list loads, and by the interceptor on a 401.
+   * Invalid sessions are logged out.
    */
   validateSessions(): Promise<void> {
-    const alfSession = this.alfresco$.getValue();
-    const nuxSession = this.nuxeo$.getValue();
+    const sessions = this.getSessions();
+    if (sessions.length === 0) return Promise.resolve();
 
-    const checks: Observable<any>[] = [];
-
-    if (alfSession) {
-      checks.push(
-        this.validateAlfrescoSession(alfSession).pipe(
-          tap(valid => {
-            if (!valid) {
-              console.warn('Alfresco session invalid, logging out');
-              this.logoutAlfresco();
-            }
-          })
-        )
-      );
-    }
-
-    if (nuxSession) {
-      checks.push(
-        this.validateNuxeoSession(nuxSession).pipe(
-          tap(valid => {
-            if (!valid) {
-              console.warn('Nuxeo session invalid, logging out');
-              this.logoutNuxeo();
-            }
-          })
-        )
-      );
-    }
-
-    if (checks.length === 0) {
-      return Promise.resolve();
-    }
-
-    return forkJoin(checks).toPromise().then(() => {});
+    return Promise.all(sessions.map(session =>
+      firstValueFrom(this.validateSession(session)).then(valid => {
+        if (!valid) {
+          console.warn(`Session for ${session.sourceId} invalid, logging out`);
+          this.logout(session.sourceId);
+        }
+      })
+    )).then(() => {});
   }
+
+  private validateSession(session: SourceSession): Observable<boolean> {
+    const source = this.findSource(session.sourceId);
+    let check: Observable<unknown>;
+
+    if (source && this.isPrimary(source) && session.sourceType === 'alfresco' && session.kind === 'ticket') {
+      const headers = new HttpHeaders({ Authorization: `Basic ${btoa(session.credential + ':')}` });
+      check = this.http.get(
+        `${environment.alfrescoUrl}/alfresco/api/-default-/public/alfresco/versions/1/people/-me-`, { headers });
+    } else if (source && this.isPrimary(source) && session.sourceType === 'nuxeo') {
+      const headers = new HttpHeaders({ Authorization: `Basic ${session.credential}` });
+      check = this.http.get(`${environment.nuxeoUrl}/api/v1/me`, { headers });
+    } else {
+      check = this.probe(session);
+    }
+
+    return check.pipe(map(() => true), catchError(() => of(false)));
+  }
+
+  /** An authenticated rag-service read carrying only this one session's credential. */
+  private probe(session: SourceSession): Observable<unknown> {
+    const value = `${session.sourceId} ${session.kind === 'ticket' ? 'Ticket' : 'Basic'} ${session.credential}`;
+    const headers = new HttpHeaders({ [SOURCE_AUTHORIZATION_HEADER]: value });
+    return this.http.get(resolveStatusUrl(), { headers });
+  }
+
+  // ---- Storage ----
+
+  private putSession(session: SourceSession): void {
+    const next = new Map(this.sessions$$.getValue());
+    next.set(session.sourceId, session);
+    this.sessions$$.next(next);
+    this.persistSessions();
+  }
+
+  /** Writes the ticket sessions. A password session never reaches web storage. */
+  private persistSessions(): void {
+    const tickets = this.getSessions().filter(s => s.kind === 'ticket');
+    if (tickets.length === 0) {
+      sessionStorage.removeItem(AuthService.SESSIONS_KEY);
+    } else {
+      sessionStorage.setItem(AuthService.SESSIONS_KEY, JSON.stringify(tickets));
+    }
+  }
+
+  private restoreSessions(): void {
+    let stored: unknown;
+    try {
+      stored = JSON.parse(sessionStorage.getItem(AuthService.SESSIONS_KEY) ?? '[]');
+    } catch {
+      stored = [];
+    }
+    const restored = new Map<string, SourceSession>();
+    for (const s of Array.isArray(stored) ? stored : []) {
+      if (s && s.kind === 'ticket' && typeof s.sourceId === 'string' && typeof s.credential === 'string') {
+        restored.set(s.sourceId, s as SourceSession);
+      }
+    }
+    this.sessions$$.next(restored);
+  }
+
+  /**
+   * Fits held sessions to a newly loaded source list. A session whose source is not listed moves to the
+   * one login source of its type, if there is exactly one, and is dropped otherwise. That keeps a ticket
+   * across a reload in which the list switched between the fallback ids and the real ones.
+   */
+  private reconcileSessions(): void {
+    const current = this.sessions$$.getValue();
+    if (current.size === 0) return;
+
+    const next = new Map<string, SourceSession>();
+    for (const session of current.values()) {
+      let source = this.findSource(session.sourceId);
+      if (!source || source.loginKinds.length === 0) {
+        const sameType = this.getLoginSources().filter(s => s.sourceType === session.sourceType);
+        source = sameType.length === 1 ? sameType[0] : undefined;
+      }
+      if (source && !next.has(source.sourceId)) {
+        next.set(source.sourceId, { ...session, sourceId: source.sourceId, displayName: source.displayName });
+      }
+    }
+    this.sessions$$.next(next);
+    this.persistSessions();
+  }
+}
+
+/** The legacy `Authorization` value for an Alfresco session. */
+function basicFor(session: SourceSession): string {
+  return session.kind === 'ticket'
+    ? `Basic ${btoa(session.credential + ':')}`
+    : `Basic ${session.credential}`;
+}
+
+/** The source list from a `/api/rag/sources` body, or null when it is not one. */
+function parseSources(body: unknown): ContentSourceDescriptor[] | null {
+  if (!Array.isArray(body)) return null;
+  const sources: ContentSourceDescriptor[] = [];
+  for (const entry of body) {
+    if (!entry || typeof entry.sourceId !== 'string' || typeof entry.sourceType !== 'string') continue;
+    const sourceType = entry.sourceType.trim().toLowerCase();
+    sources.push({
+      sourceId: entry.sourceId,
+      sourceType,
+      displayName: typeof entry.displayName === 'string' ? entry.displayName : '',
+      loginKinds: Array.isArray(entry.loginKinds)
+        ? entry.loginKinds.filter((k: unknown): k is SourceLoginKind => k === 'password' || k === 'ticket')
+        : []
+    });
+  }
+  return sources;
 }

@@ -4,7 +4,7 @@ import {
 } from '@angular/common/http';
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
-import { AuthService } from '../services/auth.service';
+import { AuthService, SOURCE_AUTHORIZATION_HEADER } from '../services/auth.service';
 import { environment } from '../../environments/environment';
 import { connectorPathPrefixes, resolveConnectorUrls, resolveStatusUrl } from '../utils/api-paths';
 
@@ -13,13 +13,12 @@ import { connectorPathPrefixes, resolveConnectorUrls, resolveStatusUrl } from '.
  *
  * Two independent credential paths, because they authenticate against different things.
  *
- * **The RAG service and the status endpoint** carry a content-source session, which is what decides the
- * documents a caller may read:
- * - Both sessions active  → Authorization (Alfresco ticket) + X-Nuxeo-Authorization (Nuxeo Basic)
- *   The backend DualSourceAuthenticationFilter handles this and builds a merged permission filter.
- * - Alfresco only         → Authorization: Basic base64(TICKET_...:)
- * - Nuxeo only            → Authorization: Basic base64(user:pass)
- *   The backend MultiSourceAuthenticationProvider tries Alfresco (fails) then falls back to Nuxeo.
+ * **The RAG service and the status endpoint** carry the content-source sessions, which are what decide the
+ * documents a caller may read. {@link AuthService.credentialHeaders} decides their shape:
+ * - One Alfresco and one Nuxeo at most, as today: Authorization (Alfresco ticket) and, with both,
+ *   X-Nuxeo-Authorization (Nuxeo Basic). Nuxeo alone goes as Authorization: Basic base64(user:pass), and
+ *   the backend MultiSourceAuthenticationProvider tries Alfresco (fails) then falls back to Nuxeo.
+ * - Any other source list: one X-Source-Authorization value per session, `<sourceId> Basic|Ticket <value>`.
  *
  * **The plugin host's connector endpoints** carry the ingester's sync-admin credential instead. That one
  * authorises reading a connector's settings schema and changing which folders sync; it has nothing to do with
@@ -38,7 +37,7 @@ export class AuthHttpInterceptor implements HttpInterceptor {
    * AuthService validates restored sessions over HTTP from its own constructor, so the first
    * request of the app's life can be issued while AuthService is still being built. Injecting it
    * here makes this singleton capture that half-built instance and keep it forever, and every later
-   * request then dies on it with "getAlfrescoSession is not a function" before it is even sent.
+   * request then dies on it with "credentialHeaders is not a function" before it is even sent.
    */
   private get auth(): AuthService {
     return this.injector.get(AuthService);
@@ -52,42 +51,29 @@ export class AuthHttpInterceptor implements HttpInterceptor {
       return next.handle(req);
     }
 
-    // Comparison-mode requests carry explicit auth headers — don't overwrite them
-    if (req.headers.has('Authorization')) {
+    // Comparison-mode requests and login probes carry explicit auth headers — don't overwrite them
+    if (req.headers.has('Authorization') || req.headers.has(SOURCE_AUTHORIZATION_HEADER)) {
       return next.handle(req);
     }
 
-    const alfSession = this.auth.getAlfrescoSession();
-    const nuxSession = this.auth.getNuxeoSession();
-
-    const handle401 = (source: Observable<HttpEvent<unknown>>) =>
-      source.pipe(
-        catchError(err => {
-          if (err.status === 401) {
-            this.auth.validateSessions();
-          }
-          return throwError(() => err);
-        })
-      );
-
-    if (!alfSession && !nuxSession) {
+    const credentials = this.auth.credentialHeaders();
+    if (Object.keys(credentials).length === 0) {
       return next.handle(req);
     }
 
     let headers = req.headers;
-
-    if (alfSession && nuxSession) {
-      // Dual auth: send both credential sets so the backend builds merged permission filters
-      headers = headers.set('Authorization', `Basic ${btoa(alfSession.ticket + ':')}`);
-      headers = headers.set('X-Nuxeo-Authorization', `Basic ${nuxSession.credentials}`);
-    } else if (alfSession) {
-      headers = headers.set('Authorization', `Basic ${btoa(alfSession.ticket + ':')}`);
-    } else if (nuxSession) {
-      // Single Nuxeo: standard Basic header — backend falls through to Nuxeo auth
-      headers = headers.set('Authorization', `Basic ${nuxSession.credentials}`);
+    for (const [name, value] of Object.entries(credentials)) {
+      headers = headers.set(name, value);
     }
 
-    return handle401(next.handle(req.clone({ headers })));
+    return next.handle(req.clone({ headers })).pipe(
+      catchError(err => {
+        if (err.status === 401) {
+          this.auth.validateSessions();
+        }
+        return throwError(() => err);
+      })
+    );
   }
 
   /**

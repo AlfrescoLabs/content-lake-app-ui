@@ -1,6 +1,15 @@
 import { Component } from '@angular/core';
 import { Router } from '@angular/router';
-import { AuthService } from '../services/auth.service';
+import { AuthService, SourceSessionView } from '../services/auth.service';
+import { SourceModifier, sourceIcon, sourceModifier, sourceTypeLabel } from '../utils/source-presentation';
+
+/** What one login card holds while the user types. */
+interface LoginForm {
+  username: string;
+  password: string;
+  loading: boolean;
+  error: string;
+}
 
 @Component({
   selector: 'app-auth',
@@ -25,13 +34,11 @@ import { AuthService } from '../services/auth.service';
           </p>
 
           <div class="hero-chips">
-            <span class="source-badge source-badge-alfresco">
-              <mat-icon>storage</mat-icon>
-              Alfresco
-            </span>
-            <span class="source-badge source-badge-nuxeo">
-              <mat-icon>folder_open</mat-icon>
-              Nuxeo
+            <span *ngFor="let type of sourceTypes"
+                  class="source-badge"
+                  [ngClass]="'source-badge-' + modifierFor(type)">
+              <mat-icon>{{ iconFor(type) }}</mat-icon>
+              {{ typeLabel(type) }}
             </span>
             <span class="metric-chip metric-chip-oncanvas">
               <mat-icon>lock</mat-icon>
@@ -44,14 +51,15 @@ import { AuthService } from '../services/auth.service';
           <span class="stat-label">Active sessions</span>
           <div class="stat-value-row">
             <strong class="stat-value">{{ activeSessionCount }}</strong>
-            <span class="stat-of">/ 2</span>
+            <span class="stat-of">/ {{ views.length }}</span>
           </div>
           <p class="stat-note">
             Search and chat automatically merge the active identities you establish here.
           </p>
           <div class="stat-dots">
-            <span class="stat-dot" [class.dot-alfresco]="alfrescoLoggedIn" [class.dot-inactive]="!alfrescoLoggedIn"></span>
-            <span class="stat-dot" [class.dot-nuxeo]="nuxeoLoggedIn" [class.dot-inactive]="!nuxeoLoggedIn"></span>
+            <span *ngFor="let view of views; trackBy: trackSource"
+                  class="stat-dot"
+                  [ngClass]="view.session ? 'dot-' + modifierFor(view.source.sourceType) : 'dot-inactive'"></span>
           </div>
         </aside>
       </div>
@@ -61,107 +69,58 @@ import { AuthService } from '../services/auth.service';
 
       <div class="auth-grid">
 
-        <mat-card class="connect-card" [class.connect-ready]="alfrescoLoggedIn">
-          <div class="card-accent card-accent-alfresco"></div>
-          <div class="connect-card-shell">
+        <mat-card *ngFor="let view of views; trackBy: trackSource"
+                  class="connect-card"
+                  [class.connect-ready]="view.session !== null">
+          <div class="card-accent" [ngClass]="'card-accent-' + modifierFor(view.source.sourceType)"></div>
+          <div class="connect-card-shell" *ngIf="formFor(view.source.sourceId) as form">
             <div class="connect-header">
-              <div class="connect-icon connect-icon-alfresco">
-                <mat-icon>storage</mat-icon>
+              <div class="connect-icon" [ngClass]="'connect-icon-' + modifierFor(view.source.sourceType)">
+                <mat-icon>{{ iconFor(view.source.sourceType) }}</mat-icon>
               </div>
               <div class="connect-identity">
                 <span class="eyebrow">Repository</span>
-                <h2>Alfresco</h2>
-                <p class="connect-status" [class.connected-label]="alfrescoLoggedIn">
-                  <mat-icon class="status-dot-icon">{{ alfrescoLoggedIn ? 'check_circle' : 'radio_button_unchecked' }}</mat-icon>
-                  {{ alfrescoLoggedIn ? ('Connected as ' + alfrescoUser) : 'Not connected' }}
+                <h2>{{ view.label }}</h2>
+                <p class="connect-status" [class.connected-label]="view.session !== null">
+                  <mat-icon class="status-dot-icon">{{ view.session ? 'check_circle' : 'radio_button_unchecked' }}</mat-icon>
+                  {{ view.session ? ('Connected as ' + view.session.username) : 'Not connected' }}
                 </p>
               </div>
             </div>
 
             <mat-form-field appearance="outline" class="auth-field">
               <mat-label>Username</mat-label>
-              <input matInput [(ngModel)]="alfrescoUsername" [disabled]="alfrescoLoading" autocomplete="username" />
+              <input matInput [(ngModel)]="form.username" [disabled]="form.loading" autocomplete="username" />
             </mat-form-field>
 
             <mat-form-field appearance="outline" class="auth-field">
               <mat-label>Password</mat-label>
               <input matInput
                      type="password"
-                     [(ngModel)]="alfrescoPassword"
-                     [disabled]="alfrescoLoading"
+                     [(ngModel)]="form.password"
+                     [disabled]="form.loading"
                      autocomplete="current-password"
-                     (keyup.enter)="loginAlfresco()" />
+                     (keyup.enter)="login(view)" />
             </mat-form-field>
 
-            <p *ngIf="alfrescoError" class="error-text">
+            <p *ngIf="form.error" class="error-text">
               <mat-icon>error_outline</mat-icon>
-              {{ alfrescoError }}
-            </p>
-
-            <div class="action-row">
-              <button mat-raised-button color="primary"
-                      class="connect-action"
-                      (click)="loginAlfresco()"
-                      [disabled]="alfrescoLoading">
-                <mat-spinner *ngIf="alfrescoLoading" diameter="16"></mat-spinner>
-                <span>{{ alfrescoLoggedIn ? 'Reconnect' : 'Connect Alfresco' }}</span>
-                <mat-icon *ngIf="!alfrescoLoading">arrow_forward</mat-icon>
-              </button>
-              <button mat-button type="button" class="logout-link" *ngIf="alfrescoLoggedIn" (click)="logoutAlfresco()">
-                Disconnect
-              </button>
-            </div>
-          </div>
-        </mat-card>
-
-        <mat-card class="connect-card" [class.connect-ready]="nuxeoLoggedIn">
-          <div class="card-accent card-accent-nuxeo"></div>
-          <div class="connect-card-shell">
-            <div class="connect-header">
-              <div class="connect-icon connect-icon-nuxeo">
-                <mat-icon>folder_open</mat-icon>
-              </div>
-              <div class="connect-identity">
-                <span class="eyebrow">Repository</span>
-                <h2>Nuxeo</h2>
-                <p class="connect-status" [class.connected-label]="nuxeoLoggedIn">
-                  <mat-icon class="status-dot-icon">{{ nuxeoLoggedIn ? 'check_circle' : 'radio_button_unchecked' }}</mat-icon>
-                  {{ nuxeoLoggedIn ? ('Connected as ' + nuxeoUser) : 'Not connected' }}
-                </p>
-              </div>
-            </div>
-
-            <mat-form-field appearance="outline" class="auth-field">
-              <mat-label>Username</mat-label>
-              <input matInput [(ngModel)]="nuxeoUsername" [disabled]="nuxeoLoading" autocomplete="username" />
-            </mat-form-field>
-
-            <mat-form-field appearance="outline" class="auth-field">
-              <mat-label>Password</mat-label>
-              <input matInput
-                     type="password"
-                     [(ngModel)]="nuxeoPassword"
-                     [disabled]="nuxeoLoading"
-                     autocomplete="current-password"
-                     (keyup.enter)="loginNuxeo()" />
-            </mat-form-field>
-
-            <p *ngIf="nuxeoError" class="error-text">
-              <mat-icon>error_outline</mat-icon>
-              {{ nuxeoError }}
+              {{ form.error }}
             </p>
 
             <div class="action-row">
               <button mat-raised-button
                       type="button"
-                      class="connect-action connect-action-nuxeo"
-                      (click)="loginNuxeo()"
-                      [disabled]="nuxeoLoading">
-                <mat-spinner *ngIf="nuxeoLoading" diameter="16"></mat-spinner>
-                <span>{{ nuxeoLoggedIn ? 'Reconnect' : 'Connect Nuxeo' }}</span>
-                <mat-icon *ngIf="!nuxeoLoading">arrow_forward</mat-icon>
+                      [color]="modifierFor(view.source.sourceType) === 'nuxeo' ? undefined : 'primary'"
+                      class="connect-action"
+                      [ngClass]="'connect-action-' + modifierFor(view.source.sourceType)"
+                      (click)="login(view)"
+                      [disabled]="form.loading">
+                <mat-spinner *ngIf="form.loading" diameter="16"></mat-spinner>
+                <span>{{ view.session ? 'Reconnect' : ('Connect ' + view.label) }}</span>
+                <mat-icon *ngIf="!form.loading">arrow_forward</mat-icon>
               </button>
-              <button mat-button type="button" class="logout-link" *ngIf="nuxeoLoggedIn" (click)="logoutNuxeo()">
+              <button mat-button type="button" class="logout-link" *ngIf="view.session" (click)="logout(view)">
                 Disconnect
               </button>
             </div>
@@ -359,6 +318,11 @@ import { AuthService } from '../services/auth.service';
       border-color: var(--source-nuxeo);
       box-shadow: 0 0 0 4px rgba(0, 163, 224, 0.25);
     }
+    .dot-sharepoint,
+    .dot-generic {
+      background: var(--hy-mark-teal);
+      border-color: var(--hy-mark-teal);
+    }
     .dot-inactive { background: transparent; }
 
     /* ── Body ───────────────────────────────────────────────── */
@@ -411,6 +375,11 @@ import { AuthService } from '../services/auth.service';
       background: linear-gradient(90deg, var(--source-nuxeo) 0%, rgba(0, 163, 224, 0.2) 100%);
     }
 
+    .card-accent-sharepoint,
+    .card-accent-generic {
+      background: linear-gradient(90deg, var(--cl-border-strong) 0%, var(--cl-border) 100%);
+    }
+
     .connect-card-shell {
       padding: 28px 28px 24px;
       display: flex;
@@ -449,6 +418,12 @@ import { AuthService } from '../services/auth.service';
     .connect-icon-nuxeo {
       background: var(--source-nuxeo-soft);
       color: var(--source-nuxeo-strong);
+    }
+
+    .connect-icon-sharepoint,
+    .connect-icon-generic {
+      background: var(--hy-gray-50);
+      color: var(--hy-gray-500);
     }
 
     .connect-identity { min-width: 0; }
@@ -619,59 +594,61 @@ import { AuthService } from '../services/auth.service';
   `]
 })
 export class AuthComponent {
-  alfrescoUsername = '';
-  alfrescoPassword = '';
-  alfrescoLoading = false;
-  alfrescoError = '';
-
-  nuxeoUsername = '';
-  nuxeoPassword = '';
-  nuxeoLoading = false;
-  nuxeoError = '';
+  private forms = new Map<string, LoginForm>();
 
   constructor(private auth: AuthService, private router: Router) {}
 
-  get alfrescoLoggedIn(): boolean { return this.auth.isAlfrescoLoggedIn(); }
-  get nuxeoLoggedIn(): boolean   { return this.auth.isNuxeoLoggedIn(); }
-  get anyLoggedIn(): boolean     { return this.auth.isAnyLoggedIn(); }
-  get alfrescoUser(): string     { return this.auth.getAlfrescoSession()?.username ?? ''; }
-  get nuxeoUser(): string        { return this.auth.getNuxeoSession()?.username ?? ''; }
+  /** One card per source with a login, in the order rag-service lists them. */
+  get views(): SourceSessionView[] { return this.auth.sessionViews(); }
+
+  /** The source types behind the cards, each once, for the hero badges. */
+  get sourceTypes(): string[] {
+    return [...new Set(this.views.map(view => view.source.sourceType))];
+  }
+
+  get anyLoggedIn(): boolean { return this.auth.isAnyLoggedIn(); }
 
   get activeSessionCount(): number {
-    return Number(this.alfrescoLoggedIn) + Number(this.nuxeoLoggedIn);
+    return this.views.filter(view => view.session !== null).length;
   }
 
-  loginAlfresco(): void {
-    if (!this.alfrescoUsername || !this.alfrescoPassword) return;
-    this.alfrescoLoading = true;
-    this.alfrescoError = '';
-    this.auth.loginAlfresco(this.alfrescoUsername, this.alfrescoPassword)
-      .then(() => { this.alfrescoPassword = ''; })
+  formFor(sourceId: string): LoginForm {
+    let form = this.forms.get(sourceId);
+    if (!form) {
+      form = { username: '', password: '', loading: false, error: '' };
+      this.forms.set(sourceId, form);
+    }
+    return form;
+  }
+
+  iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
+
+  modifierFor(sourceType?: string): SourceModifier { return sourceModifier(sourceType); }
+
+  typeLabel(sourceType?: string): string { return sourceTypeLabel(sourceType); }
+
+  trackSource(_i: number, view: SourceSessionView): string { return view.source.sourceId; }
+
+  login(view: SourceSessionView): void {
+    const form = this.formFor(view.source.sourceId);
+    if (!form.username || !form.password) return;
+    const ticketLogin = this.auth.loginKind(view.source) === 'ticket';
+    form.loading = true;
+    form.error = '';
+    this.auth.login(view.source.sourceId, form.username, form.password)
+      .then(() => { form.password = ''; })
       .catch(err => {
-        this.alfrescoError = err?.error?.error?.briefSummary
-          ?? err?.message
-          ?? 'Login failed. Check credentials.';
+        // An Alfresco tickets endpoint explains itself; everything else is checked by a plain 401.
+        form.error = ticketLogin
+          ? err?.error?.error?.briefSummary ?? err?.message ?? 'Login failed. Check credentials.'
+          : err?.status === 401
+            ? 'Invalid credentials.'
+            : err?.message ?? 'Login failed. Check credentials.';
       })
-      .finally(() => { this.alfrescoLoading = false; });
+      .finally(() => { form.loading = false; });
   }
 
-  logoutAlfresco(): void { this.auth.logoutAlfresco(); }
-
-  loginNuxeo(): void {
-    if (!this.nuxeoUsername || !this.nuxeoPassword) return;
-    this.nuxeoLoading = true;
-    this.nuxeoError = '';
-    this.auth.loginNuxeo(this.nuxeoUsername, this.nuxeoPassword)
-      .then(() => { this.nuxeoPassword = ''; })
-      .catch(err => {
-        this.nuxeoError = err?.status === 401
-          ? 'Invalid credentials.'
-          : err?.message ?? 'Login failed. Check credentials.';
-      })
-      .finally(() => { this.nuxeoLoading = false; });
-  }
-
-  logoutNuxeo(): void { this.auth.logoutNuxeo(); }
+  logout(view: SourceSessionView): void { this.auth.logout(view.source.sourceId); }
 
   proceed(): void { this.router.navigate(['/search']); }
 }

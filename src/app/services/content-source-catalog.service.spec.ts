@@ -4,6 +4,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { firstValueFrom } from 'rxjs';
 
 import { ContentSourceCatalogService, ContentSourceOption } from './content-source-catalog.service';
+import { AuthService } from './auth.service';
 
 const STATUS_URL = '/api/status';
 
@@ -148,5 +149,66 @@ describe('ContentSourceCatalogService', () => {
     const third = firstValueFrom(service.options());
     httpMock.expectOne(STATUS_URL).flush(status({ 'nuxeo:prod': 2 }));
     expect((await third).find(o => o.key === 'nuxeo')?.count).toBe(2);
+  });
+
+  describe('gating on the session of the option\'s source', () => {
+
+    const ALF_A = { sourceId: 'alfresco:aaa', sourceType: 'alfresco', displayName: 'Main', loginKinds: ['ticket'] };
+    const ALF_B = { sourceId: 'alfresco:bbb', sourceType: 'alfresco', displayName: 'Archive', loginKinds: ['password'] };
+
+    let auth: AuthService;
+
+    async function sourcesAre(sources: unknown[] | 'missing'): Promise<void> {
+      auth = TestBed.inject(AuthService);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const request = httpMock.expectOne('/api/rag/sources');
+      if (sources === 'missing') {
+        request.flush('not found', { status: 404, statusText: 'Not Found' });
+      } else {
+        request.flush(sources);
+      }
+      await auth.ready;
+    }
+
+    async function signInTo(sourceId: string): Promise<void> {
+      const login = auth.login(sourceId, 'jdoe', 'pw');
+      if (sourceId === 'alfresco:aaa' || sourceId === 'alfresco') {
+        httpMock.expectOne(r => r.url.endsWith('/tickets')).flush({ entry: { id: 'TICKET' } });
+      } else {
+        httpMock.expectOne(STATUS_URL).flush({});
+      }
+      await login;
+    }
+
+    it('offersAnIdOptionOnlyWithASessionForThatVerySource', async () => {
+      await sourcesAre([ALF_A, ALF_B]);
+      const options = await optionsFor({ 'alfresco:aaa': 3, 'alfresco:bbb': 5, 'cmis:docmgr': 1 });
+      const pick = (key: string) => service.find(options, key)!;
+
+      expect(service.isSelectable(pick('alfresco:bbb'))).toBeFalse();
+      expect(service.isSelectable(pick('alfresco'))).toBeFalse();
+      // A source with no login of its own is offered outright.
+      expect(service.isSelectable(pick('cmis'))).toBeTrue();
+
+      await signInTo('alfresco:bbb');
+
+      expect(service.isSelectable(pick('alfresco:bbb'))).toBeTrue();
+      expect(service.isSelectable(pick('alfresco:aaa'))).toBeFalse();
+      // The whole type needs a session in any one of its sources.
+      expect(service.isSelectable(pick('alfresco'))).toBeTrue();
+    });
+
+    it('acceptsAnySessionOfTheTypeForAnIdTheSourceListDoesNotName', async () => {
+      // An older backend: the list is the fallback, so no real source id is known.
+      await sourcesAre('missing');
+      const options = await optionsFor({ 'alfresco:aaa': 3, 'alfresco:bbb': 5 });
+
+      expect(service.isSelectable(service.find(options, 'alfresco:aaa')!)).toBeFalse();
+
+      await signInTo('alfresco');
+
+      expect(service.isSelectable(service.find(options, 'alfresco:aaa')!)).toBeTrue();
+      expect(service.isSelectable(service.find(options, 'alfresco:bbb')!)).toBeTrue();
+    });
   });
 });

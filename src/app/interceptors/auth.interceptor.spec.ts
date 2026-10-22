@@ -131,4 +131,68 @@ describe('AuthHttpInterceptor', () => {
     expect(request.request.headers.has('Authorization')).toBe(false);
     request.flush({});
   });
+
+  describe('content-source sessions on RAG requests', () => {
+
+    const ALF_A = { sourceId: 'alfresco:aaa', sourceType: 'alfresco', displayName: 'Main', loginKinds: ['ticket'] };
+    const ALF_B = { sourceId: 'alfresco:bbb', sourceType: 'alfresco', displayName: 'Archive', loginKinds: ['password'] };
+    const NUX = { sourceId: 'nuxeo:prod', sourceType: 'nuxeo', displayName: 'Nuxeo', loginKinds: ['password'] };
+
+    async function sourcesAre(sources: unknown[]): Promise<void> {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      httpMock.expectOne('/api/rag/sources').flush(sources);
+      await auth.ready;
+    }
+
+    async function signInAlfresco(sourceId: string): Promise<void> {
+      const login = auth.login(sourceId, 'admin', 'admin');
+      httpMock.expectOne(r => r.url.endsWith('/tickets')).flush({ entry: { id: 'TICKET_A' } });
+      await login;
+    }
+
+    it('keeps the current headers for one Alfresco and one Nuxeo', async () => {
+      await sourcesAre([ALF_A, NUX]);
+      await signInAlfresco('alfresco:aaa');
+      const nuxeo = auth.login('nuxeo:prod', 'jdoe', 'pw');
+      httpMock.expectOne('/nuxeo/api/v1/me').flush({ id: 'jdoe' });
+      await nuxeo;
+
+      http.post('/api/rag/search/semantic', {}).subscribe();
+
+      const request = httpMock.expectOne('/api/rag/search/semantic');
+      expect(request.request.headers.get('Authorization')).toBe(`Basic ${btoa('TICKET_A:')}`);
+      expect(request.request.headers.get('X-Nuxeo-Authorization')).toBe(`Basic ${btoa('jdoe:pw')}`);
+      expect(request.request.headers.has('X-Source-Authorization')).toBe(false);
+      request.flush({ results: [] });
+    });
+
+    it('sends one X-Source-Authorization value per session with two Alfresco sources', async () => {
+      await sourcesAre([ALF_A, ALF_B, NUX]);
+      await signInAlfresco('alfresco:aaa');
+      const second = auth.login('alfresco:bbb', 'jdoe', 'pw');
+      httpMock.expectOne('/api/status').flush({});
+      await second;
+
+      http.get('/api/status').subscribe();
+
+      const request = httpMock.expectOne('/api/status');
+      expect(request.request.headers.get('X-Source-Authorization'))
+        .toBe(`alfresco:aaa Ticket TICKET_A, alfresco:bbb Basic ${btoa('jdoe:pw')}`);
+      expect(request.request.headers.has('Authorization')).toBe(false);
+      expect(request.request.headers.has('X-Nuxeo-Authorization')).toBe(false);
+      request.flush({});
+    });
+
+    it('leaves an explicit X-Source-Authorization alone', async () => {
+      await sourcesAre([ALF_A, ALF_B]);
+      await signInAlfresco('alfresco:aaa');
+
+      http.get('/api/status', { headers: { 'X-Source-Authorization': 'alfresco:bbb Basic eDp5' } }).subscribe();
+
+      const request = httpMock.expectOne('/api/status');
+      expect(request.request.headers.get('X-Source-Authorization')).toBe('alfresco:bbb Basic eDp5');
+      expect(request.request.headers.has('Authorization')).toBe(false);
+      request.flush({});
+    });
+  });
 });

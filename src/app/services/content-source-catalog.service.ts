@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { Observable, catchError, map, of, shareReplay } from 'rxjs';
 import { RagService } from './rag.service';
+import { AuthService } from './auth.service';
 import { sourceKeyLabel, sourceTypeLabel, splitSourceKey } from '../utils/source-presentation';
 import { combineFilters, sourceIdClause, sourceIdsClause } from '../utils/hxql';
 
@@ -29,7 +30,7 @@ export class ContentSourceCatalogService {
 
   private cached?: Observable<ContentSourceOption[]>;
 
-  constructor(private rag: RagService) {}
+  constructor(private rag: RagService, private auth: AuthService) {}
 
   /**
    * The options to offer, one per source type, plus one per source id where a type has several.
@@ -81,6 +82,20 @@ export class ContentSourceCatalogService {
     // Only reachable for Alfresco and Nuxeo before anything is ingested into them, since every other
     // option exists because the index reported a source for it. Both populate `source_type`.
     return { sourceType: option.sourceType, filter: combineFilters(existingFilter, undefined) };
+  }
+
+  /**
+   * Whether an option can be picked with the sessions held now.
+   *
+   * A source that needs a login is selectable only with a session for it: an id-level option needs the
+   * session of that very source, and a type-level option needs a session in any source of the type. Any
+   * other source is offered outright.
+   */
+  isSelectable(option: ContentSourceOption): boolean {
+    if (!option.loginGated && !this.auth.isLoginSourceType(option.sourceType)) return true;
+    return option.level === 'id'
+      ? this.auth.hasSessionForKey(option.key)
+      : this.auth.hasSessionOfType(option.sourceType);
   }
 
   /** Finds an option by the key held in a form control. */

@@ -1,16 +1,27 @@
 import { HttpHeaders } from '@angular/common/http';
 import { Component, EventEmitter, Input, OnChanges, Output } from '@angular/core';
-import { Observable } from 'rxjs';
-import { AuthService, AlfrescoSession, NuxeoSession } from '../services/auth.service';
+import { AuthService, SourceSessionView } from '../services/auth.service';
 import { ContentSourceType, RagResult, RagService } from '../services/rag.service';
 import { permissionVerdict } from '../utils/permission-verdict';
-import { sourceClass } from '../utils/source-presentation';
+import { SourceModifier, sourceClass, sourceIcon, sourceModifier } from '../utils/source-presentation';
 
 export interface CompareResult {
   username: string;
-  source: 'alfresco' | 'nuxeo';
+  /** The source the comparison identity signed in to. */
+  sourceId: string;
+  sourceType: ContentSourceType;
+  sourceLabel: string;
   count: number;
   results: RagResult[];
+}
+
+/**
+ * What identifies one document across sources: its source id and its node id. A title or a link is not
+ * enough, because two sources of one type can hold documents with the same name.
+ */
+export function documentKey(result: RagResult): string {
+  if (result.nodeId) return `${result.sourceId ?? ''}::${result.nodeId}`;
+  return result.openInSourceUrl ?? result.title;
 }
 
 @Component({
@@ -30,17 +41,14 @@ export interface CompareResult {
       <div class="compare-shell">
 
         <div class="compare-form">
-          <mat-button-toggle-group [(ngModel)]="compareSource" class="compare-toggle">
-            <mat-button-toggle value="alfresco">
-              <span class="toggle-label toggle-label-alfresco">
-                <mat-icon>storage</mat-icon>
-                Alfresco
-              </span>
-            </mat-button-toggle>
-            <mat-button-toggle value="nuxeo">
-              <span class="toggle-label toggle-label-nuxeo">
-                <mat-icon>folder_open</mat-icon>
-                Nuxeo
+          <!-- A source, not a type: two sources of one type are compared one at a time. -->
+          <mat-button-toggle-group [ngModel]="selectedSource?.source?.sourceId"
+                                   (ngModelChange)="compareSourceId = $event"
+                                   class="compare-toggle">
+            <mat-button-toggle *ngFor="let view of sources; trackBy: trackSource" [value]="view.source.sourceId">
+              <span class="toggle-label" [ngClass]="'toggle-label-' + modifierFor(view.source.sourceType)">
+                <mat-icon>{{ iconFor(view.source.sourceType) }}</mat-icon>
+                {{ view.label }}
               </span>
             </mat-button-toggle>
           </mat-button-toggle-group>
@@ -86,10 +94,10 @@ export interface CompareResult {
               </span>
             </div>
 
-            <div class="score-card score-card-compare" [ngClass]="scoreClass(compareResult.source)">
+            <div class="score-card score-card-compare" [ngClass]="scoreClass(compareResult.sourceType)">
               <span class="score-label">Comparison view</span>
               <strong class="score-count">{{ compareResult.count }}</strong>
-              <span class="user-tag" [ngClass]="userTagClass(compareResult.source)">
+              <span class="user-tag" [ngClass]="userTagClass(compareResult.sourceType)">
                 {{ compareResult.username }}
               </span>
             </div>
@@ -354,7 +362,8 @@ export class PermissionCompareComponent implements OnChanges {
   @Input() mainSource: ContentSourceType | '' = '';
   @Output() compareComplete = new EventEmitter<CompareResult>();
 
-  compareSource: 'alfresco' | 'nuxeo' = 'alfresco';
+  /** The source to sign in to. Empty until picked, which means the first one listed. */
+  compareSourceId = '';
   compareUser = '';
   comparePass = '';
   comparing = false;
@@ -386,32 +395,38 @@ export class PermissionCompareComponent implements OnChanges {
     return permissionVerdict(this.compareResult.username, this.compareResult.count, this.mainCount);
   }
 
+  /** The sources a comparison identity can sign in to. */
+  get sources(): SourceSessionView[] { return this.auth.sessionViews(); }
+
+  /** The picked source, or the first one listed when the pick is empty or no longer listed. */
+  get selectedSource(): SourceSessionView | undefined {
+    const views = this.sources;
+    return views.find(view => view.source.sourceId === this.compareSourceId) ?? views[0];
+  }
+
   get extraResults(): RagResult[] {
     if (!this.compareResult) return [];
-    const mainIds = new Set(this.mainResults.map(r => r.openInSourceUrl ?? r.title));
-    return this.compareResult.results.filter(r => !mainIds.has(r.openInSourceUrl ?? r.title));
+    const mainIds = new Set(this.mainResults.map(documentKey));
+    return this.compareResult.results.filter(r => !mainIds.has(documentKey(r)));
   }
 
   get hiddenResults(): RagResult[] {
     if (!this.compareResult) return [];
-    const compareIds = new Set(this.compareResult.results.map(r => r.openInSourceUrl ?? r.title));
-    return this.mainResults.filter(r => !compareIds.has(r.openInSourceUrl ?? r.title));
+    const compareIds = new Set(this.compareResult.results.map(documentKey));
+    return this.mainResults.filter(r => !compareIds.has(documentKey(r)));
   }
 
   runComparison(): void {
-    if (!this.canCompare) return;
+    const selected = this.selectedSource;
+    if (!this.canCompare || !selected) return;
     this.comparing = true;
     this.authError = '';
     this.compareResult = null;
 
-    const authObs: Observable<AlfrescoSession | NuxeoSession> =
-      this.compareSource === 'alfresco'
-        ? this.auth.getTempAlfrescoSession(this.compareUser, this.comparePass)
-        : this.auth.getTempNuxeoSession(this.compareUser, this.comparePass);
-
-    authObs.subscribe({
+    this.auth.authenticate(selected.source.sourceId, this.compareUser, this.comparePass).subscribe({
       next: session => {
-        const headers = this.buildHeaders(session);
+        // Only the comparison identity's credential goes out; the interceptor leaves an explicit one alone.
+        const headers = new HttpHeaders(this.auth.headersFor([session]));
 
         this.rag.searchWithHeaders(this.query, headers, {
           sourceType: this.sourceFilter || undefined,
@@ -421,7 +436,9 @@ export class PermissionCompareComponent implements OnChanges {
           next: results => {
             this.compareResult = {
               username: session.username,
-              source: this.compareSource,
+              sourceId: selected.source.sourceId,
+              sourceType: selected.source.sourceType,
+              sourceLabel: selected.label,
               count: results.length,
               results
             };
@@ -445,6 +462,12 @@ export class PermissionCompareComponent implements OnChanges {
     });
   }
 
+  iconFor(sourceType?: string): string { return sourceIcon(sourceType); }
+
+  modifierFor(sourceType?: string): SourceModifier { return sourceModifier(sourceType); }
+
+  trackSource(_i: number, view: SourceSessionView): string { return view.source.sourceId; }
+
   openLink(result: RagResult): void {
     const url = result.openInSourceUrl ?? result.url;
     if (url) window.open(url, '_blank');
@@ -456,15 +479,5 @@ export class PermissionCompareComponent implements OnChanges {
 
   userTagClass(source: ContentSourceType | '' | undefined): string {
     return sourceClass('user-tag', source || undefined);
-  }
-
-  private buildHeaders(session: { username: string; ticket?: string; credentials?: string }): HttpHeaders {
-    let headers = new HttpHeaders();
-    if ('ticket' in session && session.ticket) {
-      headers = headers.set('Authorization', `Basic ${btoa(session.ticket + ':')}`);
-    } else if ('credentials' in session && session.credentials) {
-      headers = headers.set('Authorization', `Basic ${session.credentials}`);
-    }
-    return headers;
   }
 }

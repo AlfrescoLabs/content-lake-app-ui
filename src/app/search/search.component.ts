@@ -2,7 +2,7 @@ import { Component, OnInit } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { forkJoin, of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
-import { AuthService, AlfrescoSession, NuxeoSession } from '../services/auth.service';
+import { AuthService, SourceSessionView } from '../services/auth.service';
 import { CompareResult } from '../permission-compare/permission-compare.component';
 import { ContentSourceType, FacetBucket, FacetsResponse, RagResult, RagService } from '../services/rag.service';
 import {
@@ -13,7 +13,8 @@ import {
   SourceModifier,
   sourceIcon,
   sourceKeyLabel,
-  sourceModifier
+  sourceModifier,
+  sourceTypeLabel
 } from '../utils/source-presentation';
 import { combineFilters, escapeHxqlLiteral } from '../utils/hxql';
 
@@ -33,11 +34,18 @@ interface SearchContext {
   namedQuery?: string;
   sourceLabel: string;
   sourceModifier: SourceModifier;
-  alfrescoUser: string | null;
-  nuxeoUser: string | null;
+  /** The sessions the search ran with, one chip each. */
+  users: SearchContextUser[];
   resultCount: number;
   documentCount?: number;
   searchTimeMs: number;
+}
+
+/** One identity the last search ran as. */
+interface SearchContextUser {
+  sourceType: string;
+  label: string;
+  username: string;
 }
 
 @Component({
@@ -69,13 +77,11 @@ interface SearchContext {
               <mat-icon>lock</mat-icon>
               Permission-aware search
             </span>
-            <span class="source-badge source-badge-alfresco">
-              <mat-icon>storage</mat-icon>
-              Alfresco
-            </span>
-            <span class="source-badge source-badge-nuxeo">
-              <mat-icon>folder_open</mat-icon>
-              Nuxeo
+            <span *ngFor="let type of sourceTypes"
+                  class="source-badge"
+                  [ngClass]="'source-badge-' + modifierFor(type)">
+              <mat-icon>{{ iconFor(type) }}</mat-icon>
+              {{ typeLabel(type) }}
             </span>
           </div>
         </div>
@@ -83,24 +89,19 @@ interface SearchContext {
         <aside class="hero-panel">
           <div class="hero-panel-header">
             <span class="stat-label">Repository sessions</span>
-            <span class="hero-panel-count">{{ activeSessionCount }}/2</span>
+            <span class="hero-panel-count">{{ activeSessionCount }}/{{ sessionViews.length }}</span>
           </div>
 
           <div class="hero-session-list">
-            <div class="hero-session hero-session-alfresco" [class.connected]="alfrescoLoggedIn">
-              <div class="session-indicator" [class.active]="alfrescoLoggedIn"></div>
-              <mat-icon class="session-src-icon">storage</mat-icon>
+            <div *ngFor="let view of sessionViews; trackBy: trackSource"
+                 class="hero-session"
+                 [ngClass]="'hero-session-' + modifierFor(view.source.sourceType)"
+                 [class.connected]="view.session !== null">
+              <div class="session-indicator" [class.active]="view.session !== null"></div>
+              <mat-icon class="session-src-icon">{{ iconFor(view.source.sourceType) }}</mat-icon>
               <div class="session-info">
-                <strong>Alfresco</strong>
-                <span>{{ alfrescoUserLabel }}</span>
-              </div>
-            </div>
-            <div class="hero-session hero-session-nuxeo" [class.connected]="nuxeoLoggedIn">
-              <div class="session-indicator" [class.active]="nuxeoLoggedIn"></div>
-              <mat-icon class="session-src-icon">folder_open</mat-icon>
-              <div class="session-info">
-                <strong>Nuxeo</strong>
-                <span>{{ nuxeoUserLabel }}</span>
+                <strong>{{ view.label }}</strong>
+                <span>{{ view.session?.username ?? 'Not connected' }}</span>
               </div>
             </div>
           </div>
@@ -193,15 +194,15 @@ interface SearchContext {
       <div *ngIf="ctx" class="context-bar surface-card">
         <div class="context-group">
           <span class="context-label">Context</span>
-          <span *ngIf="ctx.alfrescoUser" class="ctx-user ctx-user-alfresco">
-            <mat-icon>storage</mat-icon>
-            {{ ctx.alfrescoUser }}
+          <!-- The source is named only when its type alone does not say which one it is. -->
+          <span *ngFor="let user of ctx.users"
+                class="ctx-user"
+                [ngClass]="'ctx-user-' + modifierFor(user.sourceType)"
+                [matTooltip]="user.label">
+            <mat-icon>{{ iconFor(user.sourceType) }}</mat-icon>
+            {{ user.username }}
           </span>
-          <span *ngIf="ctx.nuxeoUser" class="ctx-user ctx-user-nuxeo">
-            <mat-icon>folder_open</mat-icon>
-            {{ ctx.nuxeoUser }}
-          </span>
-          <span *ngIf="!ctx.alfrescoUser && !ctx.nuxeoUser" class="ctx-empty">(no session)</span>
+          <span *ngIf="ctx.users.length === 0" class="ctx-empty">(no session)</span>
         </div>
 
         <div class="context-stats">
@@ -276,7 +277,7 @@ interface SearchContext {
             <div>
               <strong>Permission filtering confirmed</strong>
               <p>
-                {{ lastCompareResult.username }} ({{ lastCompareResult.source | titlecase }}) found
+                {{ lastCompareResult.username }} ({{ lastCompareResult.sourceLabel }}) found
                 {{ lastCompareResult.count }} result{{ lastCompareResult.count !== 1 ? 's' : '' }} for the same query.
               </p>
             </div>
@@ -299,7 +300,7 @@ interface SearchContext {
           [searchFilter]="ctx?.filter || ''"
           [namedQuery]="ctx?.namedQuery || ''"
           [mainResults]="results"
-          [mainUsername]="ctx?.alfrescoUser || ctx?.nuxeoUser || ''"
+          [mainUsername]="ctx?.users?.[0]?.username || ''"
           [mainSource]="ctx?.sourceType || ''"
           (compareComplete)="onCompareComplete($event)">
         </app-permission-compare>
@@ -896,10 +897,9 @@ export class SearchComponent implements OnInit {
     this.rag.getNamedQueries().subscribe((names) => { this.namedQueries = names; });
   }
 
-  /** Alfresco and Nuxeo need a session in that repository; any other source is offered outright. */
+  /** A source with a login needs a session in that very source; any other is offered outright. */
   isSelectable(option: ContentSourceOption): boolean {
-    if (!option.loginGated) return true;
-    return option.sourceType === 'alfresco' ? this.alfrescoLoggedIn : this.nuxeoLoggedIn;
+    return this.sources.isSelectable(option);
   }
 
   sourceTooltip(option: ContentSourceOption): string {
@@ -912,20 +912,22 @@ export class SearchComponent implements OnInit {
 
   modifierFor(sourceType?: string): SourceModifier { return sourceModifier(sourceType); }
 
-  get anyLoggedIn(): boolean     { return this.auth.isAnyLoggedIn(); }
-  get alfrescoLoggedIn(): boolean { return this.auth.isAlfrescoLoggedIn(); }
-  get nuxeoLoggedIn(): boolean   { return this.auth.isNuxeoLoggedIn(); }
+  typeLabel(sourceType?: string): string { return sourceTypeLabel(sourceType); }
+
+  trackSource(_i: number, view: SourceSessionView): string { return view.source.sourceId; }
+
+  get anyLoggedIn(): boolean { return this.auth.isAnyLoggedIn(); }
+
+  /** One entry per source with a login, in the order rag-service lists them. */
+  get sessionViews(): SourceSessionView[] { return this.auth.sessionViews(); }
+
+  /** The source types behind the sessions panel, each once, for the hero badges. */
+  get sourceTypes(): string[] {
+    return [...new Set(this.sessionViews.map(view => view.source.sourceType))];
+  }
 
   get activeSessionCount(): number {
-    return Number(this.alfrescoLoggedIn) + Number(this.nuxeoLoggedIn);
-  }
-
-  get alfrescoUserLabel(): string {
-    return this.auth.getAlfrescoSession()?.username ?? 'Not connected';
-  }
-
-  get nuxeoUserLabel(): string {
-    return this.auth.getNuxeoSession()?.username ?? 'Not connected';
+    return this.sessionViews.filter(view => view.session !== null).length;
   }
 
   search(): void {
@@ -943,8 +945,9 @@ export class SearchComponent implements OnInit {
     const scope = this.sources.scope(selected, this.buildFacetFilter());
     const namedQuery = this.selectedNamedQuery || undefined;
 
-    const alfSession: AlfrescoSession | null = this.auth.getAlfrescoSession();
-    const nuxSession: NuxeoSession | null = this.auth.getNuxeoSession();
+    const users: SearchContextUser[] = this.auth.sessionViews()
+      .filter(view => view.session !== null)
+      .map(view => ({ sourceType: view.source.sourceType, label: view.label, username: view.session!.username }));
 
     this.rag.search(this.query, {
       sourceType: scope.sourceType,
@@ -964,8 +967,7 @@ export class SearchComponent implements OnInit {
           namedQuery,
           sourceLabel: selected?.label ?? '',
           sourceModifier: sourceModifier(selected?.sourceType),
-          alfrescoUser: alfSession?.username ?? null,
-          nuxeoUser: nuxSession?.username ?? null,
+          users,
           resultCount: outcome.results.length,
           documentCount: outcome.documentCount,
           searchTimeMs: elapsed
