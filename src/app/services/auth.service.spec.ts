@@ -165,7 +165,7 @@ describe('AuthService', () => {
       httpMock.expectOne(SOURCES_URL).flush([ALF_A, NUX]);
       await settle();
       const validation = httpMock.expectOne(ALFRESCO_ME_URL);
-      expect(validation.request.headers.get('Authorization')).toBe(`Basic ${btoa('TICKET_A:')}`);
+      expect(validation.request.headers.get('Authorization')).toBe(`Basic ${btoa('TICKET_A')}`);
       validation.flush({ entry: { id: 'admin' } });
       await service.ready;
 

@@ -405,7 +405,8 @@ export class AuthService {
     let check: Observable<unknown>;
 
     if (source && this.isPrimary(source) && session.sourceType === 'alfresco' && session.kind === 'ticket') {
-      const headers = new HttpHeaders({ Authorization: `Basic ${btoa(session.credential + ':')}` });
+      // The people API takes a ticket as Basic base64(ticket), without the colon of a user:password pair.
+      const headers = new HttpHeaders({ Authorization: `Basic ${btoa(session.credential)}` });
       check = this.http.get(
         `${environment.alfrescoUrl}/alfresco/api/-default-/public/alfresco/versions/1/people/-me-`, { headers });
     } else if (source && this.isPrimary(source) && session.sourceType === 'nuxeo') {

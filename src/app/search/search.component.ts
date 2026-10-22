@@ -79,11 +79,11 @@ interface SearchContextUser {
               <mat-icon>lock</mat-icon>
               Permission-aware search
             </span>
-            <span *ngFor="let type of sourceTypes"
+            <span *ngFor="let view of sessionViews; trackBy: trackSource"
                   class="source-badge"
-                  [ngClass]="'source-badge-' + modifierFor(type)">
-              <mat-icon>{{ iconFor(type) }}</mat-icon>
-              {{ typeLabel(type) }}
+                  [ngClass]="sourceColour(view.source.sourceId)">
+              <mat-icon>{{ iconFor(view.source.sourceType) }}</mat-icon>
+              {{ view.label }}
             </span>
           </div>
         </div>
@@ -120,7 +120,7 @@ interface SearchContextUser {
       <div *ngIf="!anyLoggedIn" class="warning-banner editorial-surface">
         <div class="warning-accent" aria-hidden="true"></div>
         <mat-icon>warning_amber</mat-icon>
-        <span>No active sessions. <a routerLink="/login">Connect Alfresco, Nuxeo, or both</a> to search.</span>
+        <span>No active sessions. <a routerLink="/login">Sign in to at least one repository</a> to search.</span>
       </div>
 
       <!-- Search controls ------------------------------------------------ -->
@@ -915,10 +915,6 @@ export class SearchComponent implements OnInit {
   get sessionViews(): SourceSessionView[] { return this.auth.sessionViews(); }
 
   /** The source types behind the sessions panel, each once, for the hero badges. */
-  get sourceTypes(): string[] {
-    return [...new Set(this.sessionViews.map(view => view.source.sourceType))];
-  }
-
   get activeSessionCount(): number {
     return this.sessionViews.filter(view => view.session !== null).length;
   }
