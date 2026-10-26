@@ -90,6 +90,36 @@ interface LoginForm {
               </div>
             </div>
 
+            <ng-container *ngIf="isMicrosoft(view); else passwordLogin">
+              <p class="section-copy microsoft-note">
+                Sign in with your Microsoft account. Search and chat then use that identity alone: they show the
+                SharePoint documents you may read, and nothing from the other sources.
+              </p>
+
+              <p *ngIf="form.error" class="error-text">
+                <mat-icon>error_outline</mat-icon>
+                {{ form.error }}
+              </p>
+
+              <div class="action-row">
+                <button mat-raised-button
+                        type="button"
+                        color="primary"
+                        class="connect-action"
+                        [ngClass]="'connect-action-' + modifierFor(view.source.sourceType)"
+                        (click)="loginMicrosoft(view)"
+                        [disabled]="form.loading">
+                  <mat-spinner *ngIf="form.loading" diameter="16"></mat-spinner>
+                  <span>{{ view.session ? 'Switch account' : 'Sign in with Microsoft' }}</span>
+                  <mat-icon *ngIf="!form.loading">arrow_forward</mat-icon>
+                </button>
+                <button mat-button type="button" class="logout-link" *ngIf="view.session" (click)="logout(view)">
+                  Sign out
+                </button>
+              </div>
+            </ng-container>
+
+            <ng-template #passwordLogin>
             <mat-form-field appearance="outline" class="auth-field">
               <mat-label>Username</mat-label>
               <input matInput [(ngModel)]="form.username" [disabled]="form.loading" autocomplete="username" />
@@ -126,10 +156,17 @@ interface LoginForm {
                 Disconnect
               </button>
             </div>
+            </ng-template>
           </div>
         </mat-card>
 
       </div>
+
+      <p *ngIf="microsoftSignedIn && activeSessionCount > 1" class="section-copy microsoft-exclusive">
+        <mat-icon>info_outline</mat-icon>
+        You are signed in with Microsoft, so search and chat use that identity only. Sign out of Microsoft to
+        use the other connections.
+      </p>
 
       <section class="proceed-card editorial-surface">
         <div class="proceed-accent" aria-hidden="true"></div>
@@ -567,6 +604,15 @@ interface LoginForm {
 
     .proceed-button:not([disabled]):hover mat-icon { transform: translateX(3px); }
 
+    .microsoft-note { margin: 0 0 16px; }
+
+    .microsoft-exclusive {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 24px;
+    }
+
     .proceed-hint {
       margin: 0;
       color: var(--cl-text-soft);
@@ -638,6 +684,24 @@ export class AuthComponent {
           : err?.status === 401
             ? 'Invalid credentials.'
             : err?.message ?? 'Login failed. Check credentials.';
+      })
+      .finally(() => { form.loading = false; });
+  }
+
+  /** Whether this card signs in with Microsoft rather than a username and password. */
+  isMicrosoft(view: SourceSessionView): boolean { return this.auth.loginKind(view.source) === 'entra'; }
+
+  get microsoftSignedIn(): boolean { return this.auth.hasMicrosoftSession(); }
+
+  loginMicrosoft(view: SourceSessionView): void {
+    const form = this.formFor(view.source.sourceId);
+    form.loading = true;
+    form.error = '';
+    this.auth.loginWithMicrosoft(view.source.sourceId)
+      .catch(err => {
+        // A closed popup is the user changing their mind, not an error worth showing.
+        if (err?.errorCode === 'user_cancelled') return;
+        form.error = err?.errorMessage || err?.message || 'Microsoft sign-in failed.';
       })
       .finally(() => { form.loading = false; });
   }

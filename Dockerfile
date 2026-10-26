@@ -20,4 +20,7 @@ EXPOSE 80
 ENV ALFRESCO_URL=
 ENV NUXEO_URL=/nuxeo
 ENV RAG_URL=/api/rag
+# Microsoft sign-in stays off unless both are set.
+ENV ENTRA_CLIENT_ID=
+ENV ENTRA_TENANT_ID=
 ENTRYPOINT ["/entrypoint.sh"]

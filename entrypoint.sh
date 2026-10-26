@@ -7,5 +7,7 @@ find /usr/share/nginx/html -name '*.js' -exec sed -i \
   -e "s|__NUXEO_URL__|${NUXEO_URL}|g" \
   -e "s|__RAG_URL__|${RAG_URL}|g" \
   -e "s|__CONNECTORS_URL__|${CONNECTORS_URL}|g" \
+  -e "s|__ENTRA_CLIENT_ID__|${ENTRA_CLIENT_ID}|g" \
+  -e "s|__ENTRA_TENANT_ID__|${ENTRA_TENANT_ID}|g" \
   {} \;
 exec nginx -g 'daemon off;'

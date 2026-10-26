@@ -16,5 +16,13 @@ export const environment = {
   // empty fallback, which turns the screen off rather than leaving it failing.
   //
   // Only this one is configured; the sibling paths are derived from it in utils/api-paths.ts.
-  connectorsUrl: resolveRuntimeUrl('__CONNECTORS_URL__', '')
+  connectorsUrl: resolveRuntimeUrl('__CONNECTORS_URL__', ''),
+  // Microsoft sign-in for the SharePoint source. Empty, or a placeholder left unsubstituted, turns it off.
+  entraClientId: runtimeValue('__ENTRA_CLIENT_ID__'),
+  entraTenantId: runtimeValue('__ENTRA_TENANT_ID__')
 };
+
+/** A substituted value, or '' while it is still the placeholder. Built so the bundle keeps the placeholder. */
+function runtimeValue(value: string): string {
+  return value.includes('__') ? '' : value.trim();
+}

@@ -2,8 +2,8 @@ import { Injectable, Injector } from '@angular/core';
 import {
   HttpEvent, HttpHandler, HttpInterceptor, HttpRequest
 } from '@angular/common/http';
-import { Observable, throwError } from 'rxjs';
-import { catchError } from 'rxjs/operators';
+import { Observable, from, throwError } from 'rxjs';
+import { catchError, switchMap } from 'rxjs/operators';
 import { AuthService, SOURCE_AUTHORIZATION_HEADER } from '../services/auth.service';
 import { environment } from '../../environments/environment';
 import { connectorPathPrefixes, resolveConnectorUrls, resolveStatusUrl } from '../utils/api-paths';
@@ -19,6 +19,8 @@ import { connectorPathPrefixes, resolveConnectorUrls, resolveStatusUrl } from '.
  *   X-Nuxeo-Authorization (Nuxeo Basic). Nuxeo alone goes as Authorization: Basic base64(user:pass), and
  *   the backend MultiSourceAuthenticationProvider tries Alfresco (fails) then falls back to Nuxeo.
  * - Any other source list: one X-Source-Authorization value per session, `<sourceId> Basic|Ticket <value>`.
+ * - A Microsoft session: Authorization: Bearer <token> and nothing else, renewed through MSAL before each
+ *   request. The token is for this application's own API, never for Microsoft Graph.
  *
  * **The plugin host's connector endpoints** carry the ingester's sync-admin credential instead. That one
  * authorises reading a connector's settings schema and changing which folders sync; it has nothing to do with
@@ -56,7 +58,15 @@ export class AuthHttpInterceptor implements HttpInterceptor {
       return next.handle(req);
     }
 
-    const credentials = this.auth.credentialHeaders();
+    if (this.auth.hasMicrosoftSession()) {
+      return from(this.auth.refreshMicrosoftToken()).pipe(
+        switchMap(token => this.send(req, next, token ? { Authorization: `Bearer ${token}` } : {})));
+    }
+    return this.send(req, next, this.auth.credentialHeaders());
+  }
+
+  private send(req: HttpRequest<unknown>, next: HttpHandler,
+               credentials: Record<string, string>): Observable<HttpEvent<unknown>> {
     if (Object.keys(credentials).length === 0) {
       return next.handle(req);
     }

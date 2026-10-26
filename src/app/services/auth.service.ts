@@ -4,10 +4,14 @@ import { BehaviorSubject, Observable, combineLatest, firstValueFrom, of } from '
 import { catchError, distinctUntilChanged, map } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
 import { resolveConnectorUrls, resolveStatusUrl } from '../utils/api-paths';
+import { MicrosoftAuthService, MicrosoftSignIn } from './microsoft-auth.service';
 import { sourceDisplayLabel } from '../utils/source-presentation';
 
-/** How a session proves itself to rag-service: an Alfresco ticket, or a base64(user:pass). */
-export type SourceLoginKind = 'password' | 'ticket';
+/**
+ * How a session proves itself to rag-service: an Alfresco ticket, a base64(user:pass), or an Entra ID token
+ * for this application's own API (Microsoft sign-in, SharePoint only).
+ */
+export type SourceLoginKind = 'password' | 'ticket' | 'entra';
 
 /** One entry of `GET /api/rag/sources`. It carries no URL and no secret. */
 export interface ContentSourceDescriptor {
@@ -25,7 +29,7 @@ export interface SourceSession {
   sourceType: string;
   displayName: string;
   username: string;
-  /** The Alfresco ticket for kind `ticket`, base64(user:pass) for kind `password`. */
+  /** The Alfresco ticket for kind `ticket`, base64(user:pass) for `password`, the access token for `entra`. */
   credential: string;
   kind: SourceLoginKind;
 }
@@ -49,6 +53,15 @@ export interface IngesterSession {
   credentials: string;  // base64(user:pass), sent as Authorization: Basic <credentials>
 }
 
+/**
+ * The login source Microsoft sign-in adds when it is configured and rag-service lists no SharePoint source
+ * with that login. Its bare-type id is covered by {@link AuthService.hasSessionForKey} for every
+ * `sharepoint:<id>`, which is right: an Entra identity is the same person on every SharePoint source.
+ */
+export const MICROSOFT_SOURCE: ContentSourceDescriptor = {
+  sourceId: 'sharepoint', sourceType: 'sharepoint', displayName: 'Microsoft', loginKinds: ['entra']
+};
+
 /** Header that carries one credential per signed-in source, as `<sourceId> <Basic|Ticket> <value>`. */
 export const SOURCE_AUTHORIZATION_HEADER = 'X-Source-Authorization';
 
@@ -65,7 +78,12 @@ export const SOURCE_AUTHORIZATION_HEADER = 'X-Source-Authorization';
  *
  * Sessions are treated asymmetrically on purpose. An Alfresco ticket is revocable and scoped, so it survives
  * a reload in `sessionStorage`. A password session is a reusable base64(user:pass) that nothing can revoke
- * short of changing the password, so it is held in memory only and a reload ends it.
+ * short of changing the password, so it is held in memory only and a reload ends it. A Microsoft session is
+ * kept by MSAL in this tab's `sessionStorage` and restored from there, never written under our key.
+ *
+ * A Microsoft session is exclusive on the wire. rag-service reads its token from `Authorization: Bearer`
+ * and scopes that caller to SharePoint, so while it is held every rag-service request carries it alone and
+ * the other sessions are not sent (see {@link hasMicrosoftSession}).
  */
 @Injectable({ providedIn: 'root' })
 export class AuthService {
@@ -113,7 +131,7 @@ export class AuthService {
   /** Settles once the source list is loaded and restored sessions are checked. */
   readonly ready: Promise<void>;
 
-  constructor(private http: HttpClient) {
+  constructor(private http: HttpClient, private microsoft: MicrosoftAuthService) {
     for (const key of AuthService.LEGACY_KEYS) sessionStorage.removeItem(key);
     this.restoreSessions();
 
@@ -122,6 +140,7 @@ export class AuthService {
     // resolution re-enter a half-built AuthService.
     this.ready = Promise.resolve()
       .then(() => this.loadSources())
+      .then(() => this.restoreMicrosoftSession())
       .then(() => this.validateSessions());
   }
 
@@ -178,6 +197,7 @@ export class AuthService {
 
   /** The kind of session signing in to this source produces. */
   loginKind(source: ContentSourceDescriptor): SourceLoginKind {
+    if (source.loginKinds.length === 1 && source.loginKinds[0] === 'entra') return 'entra';
     return source.sourceType === 'alfresco' && this.isPrimary(source) ? 'ticket' : 'password';
   }
 
@@ -187,7 +207,8 @@ export class AuthService {
    * `X-Nuxeo-Authorization`, so it works against a backend that does not read `X-Source-Authorization`.
    */
   isLegacyTopology(): boolean {
-    const login = this.getLoginSources();
+    // A Microsoft login is sent on its own (see headersFor), so it does not change which headers the rest need.
+    const login = this.getLoginSources().filter(s => this.loginKind(s) !== 'entra');
     const count = (type: string) => login.filter(s => s.sourceType === type).length;
     return count('alfresco') <= 1 && count('nuxeo') <= 1
       && login.every(s => s.sourceType === 'alfresco' || s.sourceType === 'nuxeo');
@@ -205,9 +226,15 @@ export class AuthService {
       )
     ).then(sources => {
       this.listed = !!sources && sources.length > 0;
-      this.sources$$.next(this.listed ? sources! : [...AuthService.FALLBACK_SOURCES]);
+      this.sources$$.next(this.withMicrosoft(this.listed ? sources! : [...AuthService.FALLBACK_SOURCES]));
       this.reconcileSessions();
     });
+  }
+
+  /** The list plus {@link MICROSOFT_SOURCE}, when Microsoft sign-in is on and nothing listed offers it. */
+  private withMicrosoft(sources: ContentSourceDescriptor[]): ContentSourceDescriptor[] {
+    if (!this.microsoft.enabled || sources.some(s => s.loginKinds.includes('entra'))) return sources;
+    return [...sources, MICROSOFT_SOURCE];
   }
 
   // ---- Sessions ----
@@ -260,11 +287,69 @@ export class AuthService {
     });
   }
 
+  /** Signs in with Microsoft, in a popup, for a source whose login kind is `entra`. */
+  loginWithMicrosoft(sourceId: string): Promise<void> {
+    const source = this.findSource(sourceId);
+    if (!source || !source.loginKinds.includes('entra')) {
+      return Promise.reject(new Error(`Source ${sourceId} has no Microsoft sign-in`));
+    }
+    return this.microsoft.signIn().then(signIn => this.putSession(this.microsoftSession(source, signIn)));
+  }
+
   logout(sourceId: string): void {
     const next = new Map(this.sessions$$.getValue());
+    const removed = next.get(sourceId);
     if (!next.delete(sourceId)) return;
     this.sessions$$.next(next);
     this.persistSessions();
+    if (removed?.kind === 'entra') {
+      this.microsoft.signOut().catch(err => console.warn('Microsoft sign-out failed', err));
+    }
+  }
+
+  /** The held Microsoft session, if any. While there is one it is the only credential sent. */
+  getMicrosoftSession(): SourceSession | null {
+    return this.getSessions().find(s => s.kind === 'entra') ?? null;
+  }
+
+  hasMicrosoftSession(): boolean {
+    return this.getMicrosoftSession() !== null;
+  }
+
+  /**
+   * A current token for the Microsoft session, kept in the session so {@link headersFor} stays synchronous.
+   * Null, and the session dropped, when MSAL can no longer renew it without the user.
+   */
+  refreshMicrosoftToken(): Promise<string | null> {
+    const session = this.getMicrosoftSession();
+    if (!session) return Promise.resolve(null);
+    return this.microsoft.accessToken().then(token => {
+      if (!token) {
+        this.logout(session.sourceId);
+        return null;
+      }
+      if (token !== session.credential) this.putSession({ ...session, credential: token });
+      return token;
+    });
+  }
+
+  private restoreMicrosoftSession(): Promise<void> {
+    const source = this.getLoginSources().find(s => s.loginKinds.includes('entra'));
+    if (!source) return Promise.resolve();
+    return this.microsoft.restore()
+      .then(signIn => { if (signIn) this.putSession(this.microsoftSession(source, signIn)); })
+      .catch(err => console.warn('Could not restore the Microsoft sign-in', err));
+  }
+
+  private microsoftSession(source: ContentSourceDescriptor, signIn: MicrosoftSignIn): SourceSession {
+    return {
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      displayName: source.displayName,
+      username: signIn.username,
+      credential: signIn.accessToken,
+      kind: 'entra'
+    };
   }
 
   /**
@@ -332,6 +417,11 @@ export class AuthService {
    */
   headersFor(sessions: readonly SourceSession[]): Record<string, string> {
     if (sessions.length === 0) return {};
+
+    // rag-service reads an Entra token from Authorization alone and scopes that caller to SharePoint, so the
+    // other sessions could not ride along in that header and are not sent.
+    const microsoft = sessions.find(s => s.kind === 'entra');
+    if (microsoft) return { Authorization: `Bearer ${microsoft.credential}` };
 
     if (this.isLegacyTopology()) {
       const alf = sessions.find(s => s.sourceType === 'alfresco');
@@ -416,6 +506,10 @@ export class AuthService {
       const headers = new HttpHeaders({ Authorization: `Basic ${btoa(session.credential)}` });
       check = this.http.get(
         `${environment.alfrescoUrl}/alfresco/api/-default-/public/alfresco/versions/1/people/-me-`, { headers });
+    } else if (session.kind === 'entra') {
+      check = this.http.get(resolveStatusUrl(), {
+        headers: new HttpHeaders({ Authorization: `Bearer ${session.credential}` })
+      });
     } else if (source && this.isPrimary(source) && session.sourceType === 'nuxeo') {
       const headers = new HttpHeaders({ Authorization: `Basic ${session.credential}` });
       check = this.http.get(`${environment.nuxeoUrl}/api/v1/me`, { headers });
@@ -517,7 +611,8 @@ function parseSources(body: unknown): ContentSourceDescriptor[] | null {
       sourceType,
       displayName: typeof entry.displayName === 'string' ? entry.displayName : '',
       loginKinds: Array.isArray(entry.loginKinds)
-        ? entry.loginKinds.filter((k: unknown): k is SourceLoginKind => k === 'password' || k === 'ticket')
+        ? entry.loginKinds.filter((k: unknown): k is SourceLoginKind =>
+            k === 'password' || k === 'ticket' || k === 'entra')
         : []
     });
   }

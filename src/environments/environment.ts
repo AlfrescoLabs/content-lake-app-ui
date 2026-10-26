@@ -14,5 +14,9 @@ export const environment = {
   // published port also works if the proxy is not in play: 'http://localhost:9096/api/connectors'.
   //
   // Only this one is configured; the sibling paths are derived from it in utils/api-paths.ts.
-  connectorsUrl: ''
+  connectorsUrl: '',
+  // Microsoft sign-in for the SharePoint source: the content-lake-ui app registration's client id and its
+  // tenant. Both empty turns the Microsoft card off. See services/microsoft-auth.service.ts.
+  entraClientId: '',
+  entraTenantId: ''
 };

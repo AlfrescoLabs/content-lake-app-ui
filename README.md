@@ -83,7 +83,7 @@ The dev server uses `proxy.conf.json` and proxies `/api/rag`, `/alfresco`, and `
 
 ### Environment variables
 
-The Docker image substitutes four placeholders at container startup, from the environment variable of
+The Docker image substitutes six placeholders at container startup, from the environment variable of
 the same name:
 
 | Placeholder | Purpose | Default (fallback) |
@@ -92,6 +92,8 @@ the same name:
 | `__NUXEO_URL__` | Nuxeo base URL | same-origin (`/nuxeo`) |
 | `__RAG_URL__` | RAG service base URL | same-origin (`/api/rag`) |
 | `__CONNECTORS_URL__` | Connector listing endpoint on an ingester | empty, and the panel is hidden |
+| `__ENTRA_CLIENT_ID__` | Client id of the sign-in app registration, for Microsoft sign-in | empty, and Microsoft sign-in is off |
+| `__ENTRA_TENANT_ID__` | Entra ID tenant of that registration | empty, and Microsoft sign-in is off |
 
 If a placeholder is unset or points at `localhost` while the browser is on a remote host, the app
 falls back to same-origin proxy paths automatically.
@@ -103,13 +105,28 @@ status page's connector panel on, for example `http://localhost:9090/api/connect
 batch ingester or `http://localhost:9096/api/connectors` for the connector ingester. Left unset, the
 panel does not render and no request is made.
 
+### Microsoft sign-in
+
+With `ENTRA_CLIENT_ID` and `ENTRA_TENANT_ID` set, the Connections screen shows a Microsoft card. It signs in
+with a popup (authorization code with PKCE) and requests one scope, `api://<client-id>/access_as_user`: a token
+for this application's own API, never a Microsoft Graph token. rag-service checks the token's audience, so it
+also needs `RAG_SECURITY_ENTRA_CALLER_AUTH_ENABLED=true` with the same client id.
+
+The app registration must be a single-page application with the page's origin as a redirect URI (for example
+`https://localhost` or `http://localhost:4200`), and must expose the `access_as_user` scope.
+
+While a Microsoft session is held, rag-service requests carry that token alone, in `Authorization: Bearer`.
+rag-service scopes a Microsoft caller to SharePoint, so search and chat show the SharePoint documents that
+user may read and nothing from Alfresco or Nuxeo. Sign out of Microsoft to use the other connections again.
+Signing out forgets the account in this tab only; it does not sign the user out of Microsoft.
+
 ## Build
 
 ```bash
 npm run build
 ```
 
-Production builds use `src/environments/environment.prod.ts`, and the container runtime replaces the `__ALFRESCO_URL__`, `__NUXEO_URL__`, `__RAG_URL__`, and `__CONNECTORS_URL__` placeholders in the compiled bundle at startup. If those values are missing, or still point at `localhost` while the browser is on a remote host, the app falls back to same-origin proxy paths (`/alfresco`, `/nuxeo`, `/api/rag`) and, for the connector listing, to no panel at all.
+Production builds use `src/environments/environment.prod.ts`, and the container runtime replaces the `__ALFRESCO_URL__`, `__NUXEO_URL__`, `__RAG_URL__`, `__CONNECTORS_URL__`, `__ENTRA_CLIENT_ID__` and `__ENTRA_TENANT_ID__` placeholders in the compiled bundle at startup. If those values are missing, or still point at `localhost` while the browser is on a remote host, the app falls back to same-origin proxy paths (`/alfresco`, `/nuxeo`, `/api/rag`) and, for the connector listing, to no panel at all.
 
 ## Test
 
