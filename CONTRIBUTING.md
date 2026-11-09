@@ -1,6 +1,6 @@
 # Contributing
 
-This project is part of the **AI Ready Content Hub** (ARCH) PoC ecosystem. Contributions are welcome.
+This project is part of the **App for OpenArch** PoC projects. Contributions are welcome.
 
 ## Before You Start
 

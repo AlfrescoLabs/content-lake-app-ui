@@ -1,4 +1,4 @@
-# content-lake-app-ui
+# App for OpenArch: UI
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-20-green.svg)](https://nodejs.org/)
@@ -7,15 +7,18 @@
 [![Status](https://img.shields.io/badge/Status-PoC-yellow.svg)]()
 [![Built on Hyland OpenArch](https://img.shields.io/badge/Built%20on-Hyland%20OpenArch-0b5394.svg)](https://github.com/Hyland/OpenArch)
 
-Demo Angular application for the AI Ready Content Hub project (ARCH). It provides a unified search and chat UI that talks to the RAG service and opens source documents in Alfresco ACA or Nuxeo Web UI.
+Demo Angular application for App for OpenArch. It provides a unified search and chat UI that talks to the RAG service and opens source documents in Alfresco ACA or Nuxeo Web UI.
+
+> [!IMPORTANT]
+> **Not an official Hyland product.** App for OpenArch is not Hyland OpenArch. It is in the [AlfrescoLabs](https://github.com/AlfrescoLabs) organization on GitHub because Hyland does not officially support it. Hyland OpenArch itself is at [github.com/hyland/OpenArch](https://github.com/hyland/OpenArch).
 
 > **This is a demo application, not a reference authentication implementation.** The sign-in screen
 > exists to show dual-source permission filtering end to end. Do not copy its authentication flow
 > into a production application. See [Authentication and sessions](#authentication-and-sessions).
 
-## AI Ready Content Hub Ecosystem
+## App for OpenArch projects
 
-Part of the **AI Ready Content Hub** ecosystem -- a PoC for ingesting Alfresco and Nuxeo content into [Hyland OpenArch](https://github.com/Hyland/OpenArch) (hxpr) for hybrid semantic search and RAG.
+Part of the **App for OpenArch** projects -- a PoC for ingesting Alfresco and Nuxeo content into [Hyland OpenArch](https://github.com/Hyland/OpenArch) (hxpr) for hybrid semantic search and RAG. Repository, module and configuration names use `content-lake`.
 
 | Repo | Role |
 |---|---|

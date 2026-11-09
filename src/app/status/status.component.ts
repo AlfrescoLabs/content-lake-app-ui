@@ -17,7 +17,7 @@ import { sourceClass, sourceIcon, splitSourceKey } from '../utils/source-present
       <div class="status-header">
         <div>
           <span class="eyebrow">Operations</span>
-          <h1 class="display-2">Hyland OpenArch<sup>TM</sup> status</h1>
+          <h1 class="display-2">App for OpenArch status</h1>
         </div>
         <button mat-stroked-button type="button" (click)="refresh()" [disabled]="loading">
           <mat-icon>refresh</mat-icon>
